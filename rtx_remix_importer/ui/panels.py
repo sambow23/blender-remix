@@ -130,8 +130,6 @@ def unregister_properties():
     # --- Clean up Capture Properties ---
     if hasattr(bpy.types.Scene, "remix_capture_folder_path"):
         del bpy.types.Scene.remix_capture_folder_path
-    if hasattr(bpy.types.Scene, "remix_capture_texture_dir_override"):
-        del bpy.types.Scene.remix_capture_texture_dir_override
     if hasattr(bpy.types.Scene, "remix_capture_scene_scale"):
         del bpy.types.Scene.remix_capture_scene_scale
     if hasattr(bpy.types.Scene, "remix_capture_import_materials"):
@@ -1397,7 +1395,6 @@ class ImportCaptureFile(bpy.types.Operator):
             
             # Use the scene properties for import settings
             scene = context.scene
-            texture_dir_override = scene.remix_capture_texture_dir_override
             import_materials = scene.remix_capture_import_materials
             import_lights = scene.remix_capture_import_lights
             scene_scale = scene.remix_capture_scene_scale
@@ -1409,7 +1406,6 @@ class ImportCaptureFile(bpy.types.Operator):
             imported_objects, imported_lights, message = import_core.import_rtx_remix_usd_with_materials(
                 context,
                 filepath,
-                texture_dir_override,
                 import_materials,
                 import_lights,
                 scene_scale
@@ -1515,7 +1511,6 @@ class PT_RemixCapturePanel(bpy.types.Panel):
             
             # Advanced settings (collapsible)
             col.separator()
-            col.prop(scene, "remix_capture_texture_dir_override")
         
         # Available Captures List
         captures_box = layout.box()
@@ -1730,7 +1725,6 @@ class BatchImportCaptures(bpy.types.Operator):
                     imported_objects, imported_lights, message = import_core.import_rtx_remix_usd_with_materials(
                         context,
                         capture_path,
-                        scene.remix_capture_texture_dir_override,
                         scene.remix_capture_import_materials,
                         scene.remix_capture_import_lights,
                         scene.remix_capture_scene_scale
@@ -2026,7 +2020,6 @@ class BatchImportSelectedCaptures(bpy.types.Operator):
 
         # Get import settings from scene
         scene = context.scene
-        texture_dir_override = scene.remix_capture_texture_dir_override
         import_materials = scene.remix_capture_import_materials
         import_lights = scene.remix_capture_import_lights
         scene_scale = scene.remix_capture_scene_scale
@@ -2055,7 +2048,6 @@ class BatchImportSelectedCaptures(bpy.types.Operator):
                 imported_objects, imported_lights, message = import_core.import_rtx_remix_usd_with_materials(
                     context,
                     capture_path,
-                    texture_dir_override,
                     import_materials,
                     import_lights,
                     scene_scale

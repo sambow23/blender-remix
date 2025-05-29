@@ -64,9 +64,9 @@ def find_texture_dir(usd_file_path):
     return None
 
 
-def setup_texture_directory(usd_file_path, texture_dir_override):
+def setup_texture_directory(usd_file_path):
     """Setup and validate texture directory."""
-    texture_dir = texture_dir_override
+    texture_dir = None  # Initialize texture_dir variable 
     if not texture_dir or not os.path.isdir(texture_dir):
         print("No valid texture directory override specified, attempting auto-detection...")
         texture_dir = find_texture_dir(usd_file_path)
@@ -808,7 +808,7 @@ def create_success_message(usd_file_path, context):
             f"Applied Scale: {context.scene_scale:.3f}")
 
 
-def import_rtx_remix_usd_with_materials(context, usd_file_path, texture_dir_override, import_materials, import_lights, scene_scale):
+def import_rtx_remix_usd_with_materials(context, usd_file_path, import_materials, import_lights, scene_scale):
     """
     Core import logic for RTX Remix USD files.
     
@@ -822,7 +822,7 @@ def import_rtx_remix_usd_with_materials(context, usd_file_path, texture_dir_over
 
     try:
         # Setup texture directory
-        texture_dir = setup_texture_directory(usd_file_path, texture_dir_override)
+        texture_dir = setup_texture_directory(usd_file_path)
         
         # Open USD stage
         stage = open_usd_stage(usd_file_path)
