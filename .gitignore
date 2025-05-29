@@ -1,0 +1,5 @@
+nvusd/
+reference/
+rtx_remix_importer/__pycache__/
+.vscode/
+/blender_dds_addon/
