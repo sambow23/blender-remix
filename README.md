@@ -33,3 +33,10 @@ This can be used as a replacement to the official NVIDIA toolkit as it's able to
 - Select objects in Blender
 - Use the export buttons in the RTX Remix panel
 - Assets are exported with the proper Remix material setup so they should work out of the box
+
+### Known Issues:
+- Non-anchor mesh replacements are considered experimental and will have issues
+- Albedo textures with an Alpha channel may not import/export correctly
+- Some .dds textures will not import correctly (appears to be a Blender bug?)
+- Texture export is _**SLOW**_
+   - Currently using a single-threaded, non-queued texture export process with texconv, this may improve in the future)
