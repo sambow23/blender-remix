@@ -43,3 +43,6 @@ This can be used as a replacement to the official NVIDIA toolkit as it's able to
 - Missing other material definitions like Aperture Translucent (will be added soon)
 - Skinned mesh exporting is not supported yet
 - Loading changes from a project's mod.usda can result in undefined behavior. This is being worked on.
+
+## Credits
+- Uncle Burrito on the RTX Remix Showcase Discord for the Aperture Opaque node group
