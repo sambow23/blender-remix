@@ -15,7 +15,7 @@ This can be used as a replacement to the official NVIDIA toolkit as it's able to
 2. Install the addon in Blender:
    - Go to `Edit > Preferences > Add-ons`
    - Click `Install...` and select the `rtx_remix_importer` folder
-   - Enable the "RTX Remix USD Importer" addon
+   - Enable the "Remix Toolkit for Blender" addon
 
 ## Usage
 
