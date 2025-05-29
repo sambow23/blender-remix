@@ -5,6 +5,7 @@ import math
 import mathutils
 import json
 import hashlib
+import subprocess
 from .. import mod_apply_utils
 
 try:
@@ -1497,6 +1498,7 @@ class PT_RemixCapturePanel(bpy.types.Panel):
         # Cache Management
         cache_row = box.row(align=True)
         cache_row.operator(ClearMaterialCache.bl_idname, icon='TRASH', text="Clear Cache")
+        cache_row.operator(FixBrokenTextures.bl_idname, icon='TEXTURE', text="Fix Broken Textures")
         cache_row.scale_y = 0.8  # Make it smaller since it's a utility function
         
         # Import Settings
@@ -1612,6 +1614,184 @@ class ClearMaterialCache(bpy.types.Operator):
             return {'CANCELLED'}
         
         return {'FINISHED'}
+
+
+class FixBrokenTextures(bpy.types.Operator):
+    """Convert DDS textures to PNG and update materials to use converted textures"""
+    bl_idname = "remix.fix_broken_textures"
+    bl_label = "Fix Broken Textures"
+    bl_options = {'REGISTER', 'UNDO'}
+    bl_description = "Convert DDS textures to PNG format using texconv.exe and update materials to use the converted textures"
+
+    @classmethod
+    def poll(cls, context):
+        return context.scene.remix_capture_folder_path and os.path.exists(context.scene.remix_capture_folder_path)
+
+    def execute(self, context):
+        capture_folder = bpy.path.abspath(context.scene.remix_capture_folder_path)
+        textures_dir = os.path.join(capture_folder, "textures")
+        
+        if not os.path.exists(textures_dir):
+            self.report({'ERROR'}, f"Textures directory not found: {textures_dir}")
+            return {'CANCELLED'}
+        
+        # Find texconv.exe (use texconv instead of texdiag for conversion)
+        addon_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        texconv_path = os.path.join(addon_dir, "rtx_remix_importer", "texconv", "texconv.exe")
+        
+        if not os.path.exists(texconv_path):
+            self.report({'ERROR'}, f"texconv.exe not found at: {texconv_path}")
+            return {'CANCELLED'}
+        
+        print(f"Starting texture conversion process...")
+        print(f"Textures directory: {textures_dir}")
+        print(f"Using texconv.exe: {texconv_path}")
+        
+        try:
+            # Step 1: Scan for DDS files
+            dds_files = []
+            for root, dirs, files in os.walk(textures_dir):
+                for file in files:
+                    if file.lower().endswith('.dds'):
+                        dds_files.append(os.path.join(root, file))
+            
+            if not dds_files:
+                self.report({'INFO'}, "No DDS files found in textures directory")
+                return {'FINISHED'}
+            
+            print(f"Found {len(dds_files)} DDS files to convert")
+            
+            # Step 2: Create converted directory
+            converted_dir = os.path.join(textures_dir, "converted")
+            os.makedirs(converted_dir, exist_ok=True)
+            
+            # Step 3: Convert DDS files to PNG using texconv
+            converted_files = {}  # Map original DDS path to converted PNG path
+            failed_conversions = []
+            
+            for i, dds_file in enumerate(dds_files):
+                try:
+                    # Get relative path from textures_dir to maintain folder structure
+                    rel_path = os.path.relpath(dds_file, textures_dir)
+                    png_name = os.path.splitext(os.path.basename(rel_path))[0] + ".png"
+                    png_path = os.path.join(converted_dir, png_name)
+                    
+                    # Run texconv to convert DDS to PNG
+                    cmd = [texconv_path, "-ft", "png", "-o", converted_dir, "-y", dds_file]
+                    
+                    print(f"Converting {i+1}/{len(dds_files)}: {os.path.basename(dds_file)}")
+                    
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                    
+                    # texconv creates the PNG with the same base name as the DDS
+                    expected_png = os.path.join(converted_dir, png_name)
+                    
+                    if result.returncode == 0 and os.path.exists(expected_png):
+                        converted_files[dds_file] = expected_png
+                        print(f"  Successfully converted to: {png_name}")
+                    else:
+                        failed_conversions.append(dds_file)
+                        print(f"  Failed to convert: {os.path.basename(dds_file)}")
+                        if result.stderr:
+                            print(f"    Error: {result.stderr}")
+                
+                except subprocess.TimeoutExpired:
+                    failed_conversions.append(dds_file)
+                    print(f"  Timeout converting: {os.path.basename(dds_file)}")
+                except Exception as e:
+                    failed_conversions.append(dds_file)
+                    print(f"  Error converting {os.path.basename(dds_file)}: {e}")
+            
+            successful_conversions = len(converted_files)
+            print(f"Conversion complete: {successful_conversions} successful, {len(failed_conversions)} failed")
+            
+            if successful_conversions == 0:
+                self.report({'ERROR'}, "No textures were successfully converted")
+                return {'CANCELLED'}
+            
+            # Step 4: Update materials to use converted textures
+            updated_materials = self._update_materials_with_converted_textures(converted_files, textures_dir, converted_dir)
+            
+            # Final report
+            message = f"Converted {successful_conversions} textures and updated {updated_materials} materials"
+            if failed_conversions:
+                message += f" ({len(failed_conversions)} conversions failed)"
+            
+            self.report({'INFO'}, message)
+            print(f"Texture fix complete: {message}")
+            
+            return {'FINISHED'}
+            
+        except Exception as e:
+            self.report({'ERROR'}, f"Error during texture conversion: {e}")
+            print(f"Error during texture conversion: {e}")
+            import traceback
+            traceback.print_exc()
+            return {'CANCELLED'}
+    
+    def _update_materials_with_converted_textures(self, converted_files, textures_dir, converted_dir):
+        """Update all materials to use converted PNG textures instead of DDS"""
+        updated_count = 0
+        
+        # Get all materials in the scene
+        for material in bpy.data.materials:
+            if not material.use_nodes:
+                continue
+            
+            material_updated = False
+            
+            # Look for image texture nodes
+            for node in material.node_tree.nodes:
+                if node.type == 'TEX_IMAGE' and node.image:
+                    image = node.image
+                    
+                    # Check if this image uses a DDS file that we converted
+                    if image.filepath:
+                        abs_image_path = bpy.path.abspath(image.filepath)
+                        
+                        # Find matching converted file
+                        for original_dds, converted_png in converted_files.items():
+                            # Check exact path match or filename match
+                            dds_filename = os.path.basename(original_dds)
+                            image_filename = os.path.basename(abs_image_path)
+                            
+                            if (abs_image_path == original_dds or 
+                                image_filename == dds_filename or
+                                image_filename.lower() == dds_filename.lower()):
+                                
+                                # Create new image with PNG file
+                                try:
+                                    # Generate a unique name for the PNG version
+                                    base_name = os.path.splitext(image.name)[0]
+                                    new_image_name = f"{base_name}_png"
+                                    
+                                    # Remove existing image with same name if it exists
+                                    if new_image_name in bpy.data.images:
+                                        bpy.data.images.remove(bpy.data.images[new_image_name])
+                                    
+                                    # Load the converted PNG
+                                    new_image = bpy.data.images.load(converted_png)
+                                    new_image.name = new_image_name
+                                    
+                                    # Replace the image in the node
+                                    old_image_name = image.name
+                                    node.image = new_image
+                                    
+                                    print(f"  Updated material '{material.name}' node '{node.name}':")
+                                    print(f"    From: {old_image_name} ({dds_filename})")
+                                    print(f"    To: {new_image_name} ({os.path.basename(converted_png)})")
+                                    
+                                    material_updated = True
+                                    
+                                except Exception as e:
+                                    print(f"  Error updating image in material '{material.name}': {e}")
+                                
+                                break
+            
+            if material_updated:
+                updated_count += 1
+        
+        return updated_count
 
 
 class BatchImportCaptures(bpy.types.Operator):

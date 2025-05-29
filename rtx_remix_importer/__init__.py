@@ -87,6 +87,8 @@ if panels:
         classes_to_register.append(panels.ClearCaptureList)
     if hasattr(panels, 'ClearMaterialCache'):
         classes_to_register.append(panels.ClearMaterialCache)
+    if hasattr(panels, 'FixBrokenTextures'):
+        classes_to_register.append(panels.FixBrokenTextures)
     if hasattr(panels, 'BatchImportCaptures'):
         classes_to_register.append(panels.BatchImportCaptures)
     if hasattr(panels, 'ToggleCaptureSelection'):
@@ -170,6 +172,8 @@ def register():
             local_classes.append(panels.ClearCaptureList)
         if hasattr(panels, 'ClearMaterialCache'):
             local_classes.append(panels.ClearMaterialCache)
+        if hasattr(panels, 'FixBrokenTextures'):
+            local_classes.append(panels.FixBrokenTextures)
         if hasattr(panels, 'BatchImportCaptures'):
             local_classes.append(panels.BatchImportCaptures)
         if hasattr(panels, 'ToggleCaptureSelection'):
