@@ -42,3 +42,4 @@ This can be used as a replacement to the official NVIDIA toolkit as it's able to
    - Currently using a single-threaded, non-queued texture export process with texconv, this may improve in the future)
 - Missing other material definitions like Aperture Translucent (will be added soon)
 - Skinned mesh exporting is not supported yet
+- Loading changes from a project's mod.usda can result in undefined behavior. This is being worked on.
