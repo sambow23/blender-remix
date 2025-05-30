@@ -197,8 +197,19 @@ def export_material(blender_material, sublayer_stage, project_root, sublayer_pat
         looks_path = Sdf.Path("/RootNode/Looks")
         sublayer_stage.OverridePrim(looks_path)
         
-        mat_base_name = sanitize_prim_name(blender_material.name)
-        mat_name_sanitized = generate_uuid_name(mat_base_name, prefix="mat_")
+        # For material replacement, use base material name without hash suffixes
+        # This ensures we replace the correct original material
+        if parent_mesh_path:  # Material replacement mode
+            base_material_name = extract_base_material_name(blender_material.name)
+            print(f"  Using base material name for replacement: {base_material_name}")
+            mat_base_name = sanitize_prim_name(base_material_name)
+            # For material replacement, use the exact base name without UUID generation
+            mat_name_sanitized = mat_base_name
+        else:  # New material export
+            mat_base_name = sanitize_prim_name(blender_material.name)
+            # For new materials, generate UUID to avoid conflicts
+            mat_name_sanitized = generate_uuid_name(mat_base_name, prefix="mat_")
+            
         mat_path = looks_path.AppendPath(mat_name_sanitized)
         
         material_prim = sublayer_stage.OverridePrim(mat_path)
