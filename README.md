@@ -54,3 +54,5 @@ This can be used as a replacement to the official NVIDIA toolkit as it's able to
 
 ## Credits
 - Uncle Burrito on the RTX Remix Showcase Discord for the Aperture Opaque node group
+
+If you like what I do, buy me a [coffee](https://ko-fi.com/cattarappa)
