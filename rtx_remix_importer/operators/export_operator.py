@@ -40,6 +40,71 @@ def sanitize_prim_name(name):
     from .. import core_utils
     return core_utils.sanitize_prim_name(name)
 
+def extract_base_material_name(material_name):
+    """Extract base material name by removing hash suffixes.
+    
+    Example: 'mat_90ABF9B7573AA175_ed309fea_c0e78a85' -> 'mat_90ABF9B7573AA175'
+    """
+    # Split by underscore and look for hash patterns
+    parts = material_name.split('_')
+    
+    # Hash suffixes are typically 8 characters of hex
+    # Keep parts until we find what looks like a hash suffix
+    base_parts = []
+    for part in parts:
+        # If this part looks like a hash (8 hex chars), stop here
+        if len(part) == 8 and all(c in '0123456789abcdefABCDEF' for c in part):
+            break
+        base_parts.append(part)
+    
+    # If we didn't find any hash patterns, return the original name
+    if len(base_parts) == len(parts):
+        return material_name
+    
+    return '_'.join(base_parts)
+
+def find_existing_texture_for_base_material(base_material_name, texture_type, textures_dir, texture_processor):
+    """Find existing texture for base material name, ignoring hash suffixes.
+    
+    Args:
+        base_material_name: Base material name without hash suffixes
+        texture_type: Type of texture (e.g., 'base color', 'normal')
+        textures_dir: Directory to search for textures
+        texture_processor: TextureProcessor instance for suffix lookup
+        
+    Returns:
+        Path to existing texture file if found, None otherwise
+    """
+    if not os.path.exists(textures_dir):
+        return None
+    
+    # Get the expected suffix for this texture type
+    type_suffix = texture_processor.get_texture_suffix(texture_type)
+    
+    # Look for files that match the base material pattern
+    # The texture name is typically the material name without the 'mat_' prefix
+    if base_material_name.startswith('mat_'):
+        texture_base = base_material_name[4:]  # Remove 'mat_' prefix
+    else:
+        texture_base = base_material_name
+    
+    # Look for existing texture files with this base name
+    expected_filename = f"{texture_base}{type_suffix}.dds"
+    expected_path = os.path.join(textures_dir, expected_filename)
+    
+    if os.path.exists(expected_path):
+        return expected_path
+    
+    # Also check for files that start with the base name (in case of variations)
+    try:
+        for filename in os.listdir(textures_dir):
+            if filename.startswith(texture_base) and filename.endswith(f"{type_suffix}.dds"):
+                return os.path.join(textures_dir, filename)
+    except OSError:
+        pass
+    
+    return None
+
 def ensure_mdl_files(project_root):
     """Copies MDL shader files from the addon to the project directory."""
     # Source MDL directory in the addon
@@ -290,17 +355,31 @@ def export_material(blender_material, sublayer_stage, project_root, sublayer_pat
             dds_file_name = f"{base_name}{type_suffix}.dds"
             absolute_dds_path = os.path.normpath(os.path.join(textures_dir, dds_file_name))
             
-            # Add to parallel processing queue (only once)
+            # Check if this exact texture already exists
+            if os.path.exists(absolute_dds_path):
+                relative_texture_path = get_relative_path(sublayer_path, absolute_dds_path)
+                print(f"    Using existing texture: {relative_texture_path}")
+                return bl_image, relative_texture_path
+            
+            # Check for existing texture based on base material name (ignoring hash suffixes)
+            base_material_name = extract_base_material_name(blender_material.name)
+            existing_texture_path = find_existing_texture_for_base_material(
+                base_material_name, texture_type, textures_dir, texture_processor
+            )
+            
+            if existing_texture_path:
+                # Found existing texture for base material - reuse it
+                relative_texture_path = get_relative_path(sublayer_path, existing_texture_path)
+                print(f"    Reusing existing texture from base material '{base_material_name}': {relative_texture_path}")
+                print(f"    Skipping processing for '{bl_image.name}' (already processed for base material)")
+                return bl_image, relative_texture_path
+            
+            # No existing texture found - add to processing queue
             texture_tasks.append((bl_image, absolute_dds_path, texture_type, dds_format))
             
             # Calculate relative path for later use
             relative_texture_path = get_relative_path(sublayer_path, absolute_dds_path)
-            
-            # Check if texture already exists from previous processing
-            if os.path.exists(absolute_dds_path):
-                print(f"    Using existing texture: {relative_texture_path}")
-            else:
-                print(f"    Will process texture: {relative_texture_path}")
+            print(f"    Will process texture: {relative_texture_path}")
             
             return bl_image, relative_texture_path
 
