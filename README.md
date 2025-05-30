@@ -1,4 +1,5 @@
 # Remix Toolkit for Blender
+![image](https://github.com/user-attachments/assets/c20812f9-6efb-446a-9c86-e797bb90682e)
 
 A Blender addon for importing and exporting RTX Remix USD files.
 This can be used as a replacement to the official NVIDIA toolkit as it's able to import RTX Remix captures and export assets back in a NVIDIA Omniverse USD compatible format.
@@ -46,9 +47,8 @@ This can be used as a replacement to the official NVIDIA toolkit as it's able to
 - Albedo textures with an Alpha channel may not import/export correctly
 - Some or all .dds textures are purple
    - Happens with invalid .dds texture formats, use `Captures > Fix Broken Textures` to fix it
-- Texture export is _**SLOW**_
-   - Currently using a single-threaded, non-queued texture export process with texconv, this may improve in the future)
-- Missing other material definitions like Aperture Translucent (will be added soon)
+- The `Aperture Opaque` node group is not hooked up completely, there are some missing features (animation, iridescence, flags, etc)
+- Missing other material definitions like `Aperture Translucent` (will be added soon)
 - Skinned mesh exporting is not supported yet
 - Loading changes from a project's mod.usda can result in undefined behavior. This is being worked on.
 
