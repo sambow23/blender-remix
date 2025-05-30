@@ -136,9 +136,19 @@ class REMIX_OT_ConvertDDSTextures(Operator):
         default=False
     )
     
+    use_parallel: BoolProperty(
+        name="Use Parallel Processing",
+        description="Process multiple textures simultaneously for faster conversion",
+        default=True
+    )
+    
     def execute(self, context):
         try:
             from ..core_utils import get_texture_processor
+            import asyncio
+            import tempfile
+            import os
+            
             texture_processor = get_texture_processor()
             
             if not texture_processor.is_available():
@@ -167,18 +177,109 @@ class REMIX_OT_ConvertDDSTextures(Operator):
                 self.report({'INFO'}, "No DDS textures found to convert")
                 return {'FINISHED'}
             
-            converted_count = 0
-            for image in dds_images:
-                # This would need async implementation for real use
-                print(f"Would convert: {image.name}")
-                converted_count += 1
+            # Create temporary directory for converted textures
+            temp_dir = tempfile.mkdtemp(prefix="remix_dds_convert_")
             
-            self.report({'INFO'}, f"Found {converted_count} DDS textures to convert (conversion not implemented yet)")
+            def progress_callback(message):
+                print(f"[DDS Conversion] {message}")
+            
+            async def convert_dds_textures():
+                """Async function to convert DDS textures."""
+                conversion_tasks = []
+                
+                for image in dds_images:
+                    if not image.filepath:
+                        continue
+                    
+                    # Create output path
+                    base_name = os.path.splitext(image.name)[0]
+                    output_path = os.path.join(temp_dir, f"{base_name}.png")
+                    
+                    # Add to conversion tasks (DDS to PNG conversion)
+                    conversion_tasks.append((image.filepath, output_path))
+                
+                if not conversion_tasks:
+                    return {}
+                
+                if self.use_parallel:
+                    # Use parallel processing
+                    progress_callback(f"Starting parallel conversion of {len(conversion_tasks)} DDS textures...")
+                    
+                    # Convert DDS files to PNG in parallel
+                    tasks = []
+                    for dds_path, png_path in conversion_tasks:
+                        task = texture_processor.convert_dds_to_png_async(
+                            dds_path, png_path, progress_callback
+                        )
+                        tasks.append(task)
+                    
+                    # Wait for all conversions to complete
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    
+                    # Process results
+                    successful_conversions = []
+                    for i, result in enumerate(results):
+                        if isinstance(result, Exception):
+                            progress_callback(f"Error converting {conversion_tasks[i][0]}: {result}")
+                        elif result:
+                            successful_conversions.append(conversion_tasks[i])
+                    
+                    return successful_conversions
+                
+                else:
+                    # Sequential processing
+                    successful_conversions = []
+                    for i, (dds_path, png_path) in enumerate(conversion_tasks):
+                        progress_callback(f"Converting {i+1}/{len(conversion_tasks)}: {os.path.basename(dds_path)}")
+                        
+                        success = await texture_processor.convert_dds_to_png_async(
+                            dds_path, png_path, progress_callback
+                        )
+                        
+                        if success:
+                            successful_conversions.append((dds_path, png_path))
+                    
+                    return successful_conversions
+            
+            # Run the async conversion
+            try:
+                successful_conversions = asyncio.run(convert_dds_textures())
+                
+                if successful_conversions:
+                    # Load converted PNG textures back into Blender
+                    for dds_path, png_path in successful_conversions:
+                        if os.path.exists(png_path):
+                            # Find the original image and replace it
+                            for image in dds_images:
+                                if image.filepath == dds_path:
+                                    try:
+                                        # Load the converted PNG
+                                        image.filepath = png_path
+                                        image.reload()
+                                        progress_callback(f"Replaced {image.name} with converted PNG")
+                                    except Exception as e:
+                                        progress_callback(f"Error loading converted texture {image.name}: {e}")
+                    
+                    self.report({'INFO'}, f"Successfully converted {len(successful_conversions)} DDS textures to PNG")
+                else:
+                    self.report({'WARNING'}, "No textures were successfully converted")
+                
+            except Exception as e:
+                self.report({'ERROR'}, f"Error during conversion: {e}")
+                return {'CANCELLED'}
+            
+            finally:
+                # Cleanup temporary directory
+                try:
+                    import shutil
+                    shutil.rmtree(temp_dir)
+                except:
+                    pass  # Best effort cleanup
+            
             return {'FINISHED'}
             
         except ImportError:
             self.report({'ERROR'}, "Texture conversion tools not available")
-            return {'CANCELLED'}
 
 # Panel for texture management
 class REMIX_PT_TextureManagement(bpy.types.Panel):

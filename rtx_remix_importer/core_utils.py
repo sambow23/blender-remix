@@ -20,17 +20,29 @@ from . import constants
 
 # Global thread pool for async operations
 _thread_pool = None
+_texture_queue = None
 
 def get_thread_pool():
     """Get or create the global thread pool for async operations."""
     global _thread_pool
     if _thread_pool is None:
-        _thread_pool = ThreadPoolExecutor(max_workers=4)
+        # Increase max workers for better parallel processing
+        _thread_pool = ThreadPoolExecutor(max_workers=min(8, os.cpu_count() or 4))
     return _thread_pool
 
+def get_texture_queue():
+    """Get or create the global texture processing queue."""
+    global _texture_queue
+    if _texture_queue is None:
+        _texture_queue = TextureProcessingQueue()
+    return _texture_queue
+
 def cleanup_thread_pool():
-    """Cleanup the global thread pool."""
-    global _thread_pool
+    """Cleanup the global thread pool and texture queue."""
+    global _thread_pool, _texture_queue
+    if _texture_queue is not None:
+        _texture_queue.shutdown()
+        _texture_queue = None
     if _thread_pool is not None:
         _thread_pool.shutdown(wait=True)
         _thread_pool = None
@@ -158,11 +170,257 @@ class USDStageManager:
         self._open_stages.clear()
 
 # Global stage manager instance
-_stage_manager = USDStageManager()
+_stage_manager = None
 
-def get_stage_manager() -> USDStageManager:
-    """Get the global stage manager."""
+def get_stage_manager():
+    """Get or create the global stage manager."""
+    global _stage_manager
+    if _stage_manager is None:
+        _stage_manager = USDStageManager()
     return _stage_manager
+
+# --- Async Texture Processing Queue ---
+
+class TextureTask:
+    """Represents a texture processing task."""
+    
+    def __init__(self, task_id: str, bl_image: bpy.types.Image, output_path: str, 
+                 texture_type: str = 'base color', dds_format: Optional[str] = None,
+                 progress_callback: Optional[Callable[[str], None]] = None):
+        self.task_id = task_id
+        self.bl_image = bl_image
+        self.output_path = output_path
+        self.texture_type = texture_type
+        self.dds_format = dds_format
+        self.progress_callback = progress_callback
+        self.future = None
+        self.status = "pending"  # pending, processing, completed, failed
+        self.result = None
+        self.error = None
+        self.created_at = asyncio.get_event_loop().time()
+
+class TextureProcessingQueue:
+    """Manages a queue of texture processing tasks with parallel execution."""
+    
+    def __init__(self, max_concurrent_tasks: int = None):
+        self.max_concurrent_tasks = max_concurrent_tasks or min(4, os.cpu_count() or 2)
+        self.queue = asyncio.Queue()
+        self.active_tasks = {}  # task_id -> TextureTask
+        self.completed_tasks = {}  # task_id -> TextureTask
+        self.processing_semaphore = asyncio.Semaphore(self.max_concurrent_tasks)
+        self.worker_tasks = []
+        self.is_running = False
+        self._task_counter = 0
+        self._lock = asyncio.Lock()
+    
+    async def start(self):
+        """Start the queue processing workers."""
+        if self.is_running:
+            return
+        
+        self.is_running = True
+        # Create worker tasks
+        for i in range(self.max_concurrent_tasks):
+            worker = asyncio.create_task(self._worker(f"worker-{i}"))
+            self.worker_tasks.append(worker)
+    
+    async def stop(self):
+        """Stop the queue processing workers."""
+        self.is_running = False
+        
+        # Cancel all worker tasks
+        for worker in self.worker_tasks:
+            worker.cancel()
+        
+        # Wait for workers to finish
+        if self.worker_tasks:
+            await asyncio.gather(*self.worker_tasks, return_exceptions=True)
+        
+        self.worker_tasks.clear()
+    
+    def shutdown(self):
+        """Synchronous shutdown for cleanup."""
+        if self.is_running:
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # Schedule shutdown for later
+                    asyncio.create_task(self.stop())
+                else:
+                    loop.run_until_complete(self.stop())
+            except:
+                pass  # Best effort cleanup
+    
+    async def add_task(self, bl_image: bpy.types.Image, output_path: str, 
+                      texture_type: str = 'base color', dds_format: Optional[str] = None,
+                      progress_callback: Optional[Callable[[str], None]] = None) -> str:
+        """Add a texture processing task to the queue."""
+        async with self._lock:
+            self._task_counter += 1
+            task_id = f"texture_task_{self._task_counter}"
+        
+        task = TextureTask(task_id, bl_image, output_path, texture_type, dds_format, progress_callback)
+        
+        # Ensure workers are running
+        if not self.is_running:
+            await self.start()
+        
+        await self.queue.put(task)
+        self.active_tasks[task_id] = task
+        
+        if progress_callback:
+            progress_callback(f"Task {task_id} queued for processing")
+        
+        return task_id
+    
+    async def add_batch(self, tasks: List[Tuple[bpy.types.Image, str, str, Optional[str]]],
+                       progress_callback: Optional[Callable[[str], None]] = None) -> List[str]:
+        """Add multiple texture processing tasks to the queue."""
+        task_ids = []
+        
+        for bl_image, output_path, texture_type, dds_format in tasks:
+            task_id = await self.add_task(bl_image, output_path, texture_type, dds_format, progress_callback)
+            task_ids.append(task_id)
+        
+        if progress_callback:
+            progress_callback(f"Added {len(task_ids)} tasks to processing queue")
+        
+        return task_ids
+    
+    async def wait_for_task(self, task_id: str, timeout: Optional[float] = None) -> bool:
+        """Wait for a specific task to complete."""
+        start_time = asyncio.get_event_loop().time()
+        
+        while task_id in self.active_tasks:
+            if timeout and (asyncio.get_event_loop().time() - start_time) > timeout:
+                return False
+            
+            await asyncio.sleep(0.1)
+        
+        return task_id in self.completed_tasks
+    
+    async def wait_for_all(self, task_ids: List[str], timeout: Optional[float] = None,
+                          progress_callback: Optional[Callable[[str], None]] = None) -> bool:
+        """Wait for all specified tasks to complete."""
+        start_time = asyncio.get_event_loop().time()
+        
+        while True:
+            remaining_tasks = [tid for tid in task_ids if tid in self.active_tasks]
+            
+            if not remaining_tasks:
+                break
+            
+            if timeout and (asyncio.get_event_loop().time() - start_time) > timeout:
+                if progress_callback:
+                    progress_callback(f"Timeout waiting for {len(remaining_tasks)} tasks")
+                return False
+            
+            if progress_callback:
+                completed = len(task_ids) - len(remaining_tasks)
+                progress_callback(f"Completed {completed}/{len(task_ids)} texture tasks")
+            
+            await asyncio.sleep(0.5)
+        
+        if progress_callback:
+            progress_callback(f"All {len(task_ids)} texture tasks completed")
+        
+        return True
+    
+    def get_task_status(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """Get the status of a specific task."""
+        if task_id in self.active_tasks:
+            task = self.active_tasks[task_id]
+            return {
+                "task_id": task_id,
+                "status": task.status,
+                "texture_name": task.bl_image.name,
+                "output_path": task.output_path,
+                "texture_type": task.texture_type,
+                "error": task.error
+            }
+        elif task_id in self.completed_tasks:
+            task = self.completed_tasks[task_id]
+            return {
+                "task_id": task_id,
+                "status": task.status,
+                "texture_name": task.bl_image.name,
+                "output_path": task.output_path,
+                "texture_type": task.texture_type,
+                "result": task.result,
+                "error": task.error
+            }
+        
+        return None
+    
+    def get_queue_status(self) -> Dict[str, Any]:
+        """Get overall queue status."""
+        return {
+            "is_running": self.is_running,
+            "queue_size": self.queue.qsize(),
+            "active_tasks": len(self.active_tasks),
+            "completed_tasks": len(self.completed_tasks),
+            "max_concurrent": self.max_concurrent_tasks,
+            "worker_count": len(self.worker_tasks)
+        }
+    
+    async def _worker(self, worker_name: str):
+        """Worker coroutine that processes tasks from the queue."""
+        texture_processor = get_texture_processor()
+        
+        while self.is_running:
+            try:
+                # Get task from queue with timeout
+                task = await asyncio.wait_for(self.queue.get(), timeout=1.0)
+                
+                async with self.processing_semaphore:
+                    task.status = "processing"
+                    
+                    if task.progress_callback:
+                        task.progress_callback(f"[{worker_name}] Processing {task.bl_image.name}")
+                    
+                    try:
+                        # Process the texture
+                        result = await texture_processor.convert_png_to_dds_async(
+                            task.bl_image,
+                            task.output_path,
+                            task.texture_type,
+                            task.dds_format,
+                            task.progress_callback
+                        )
+                        
+                        task.result = result
+                        task.status = "completed" if result else "failed"
+                        
+                        if not result:
+                            task.error = "Conversion failed"
+                        
+                    except Exception as e:
+                        task.status = "failed"
+                        task.error = str(e)
+                        if task.progress_callback:
+                            task.progress_callback(f"Error processing {task.bl_image.name}: {e}")
+                    
+                    finally:
+                        # Move task from active to completed
+                        if task.task_id in self.active_tasks:
+                            del self.active_tasks[task.task_id]
+                        self.completed_tasks[task.task_id] = task
+                        
+                        self.queue.task_done()
+                        
+                        if task.progress_callback:
+                            status_msg = "completed successfully" if task.status == "completed" else f"failed: {task.error}"
+                            task.progress_callback(f"[{worker_name}] Task {task.task_id} {status_msg}")
+            
+            except asyncio.TimeoutError:
+                # No tasks in queue, continue
+                continue
+            except asyncio.CancelledError:
+                # Worker was cancelled
+                break
+            except Exception as e:
+                print(f"Worker {worker_name} error: {e}")
+                continue
 
 # --- Async Texture Processing ---
 
@@ -225,6 +483,96 @@ class TextureProcessor:
     def get_texture_suffix(self, texture_type: str) -> str:
         """Get RTX Remix suffix for texture type."""
         return self.texture_type_suffixes.get(texture_type.lower(), "")
+    
+    # --- Queue Integration Methods ---
+    
+    async def queue_texture_conversion(
+        self, 
+        bl_image: bpy.types.Image, 
+        output_path: str, 
+        texture_type: str = 'base color',
+        dds_format: Optional[str] = None,
+        progress_callback: Optional[Callable[[str], None]] = None
+    ) -> str:
+        """Queue a texture conversion task and return task ID."""
+        queue = get_texture_queue()
+        return await queue.add_task(bl_image, output_path, texture_type, dds_format, progress_callback)
+    
+    async def queue_batch_conversion(
+        self, 
+        textures: List[Tuple[bpy.types.Image, str, str, Optional[str]]],
+        progress_callback: Optional[Callable[[str], None]] = None
+    ) -> List[str]:
+        """Queue multiple texture conversion tasks and return list of task IDs.
+        
+        Args:
+            textures: List of (bl_image, output_path, texture_type, dds_format) tuples
+            progress_callback: Optional progress callback function
+            
+        Returns:
+            List of task IDs for tracking
+        """
+        queue = get_texture_queue()
+        return await queue.add_batch(textures, progress_callback)
+    
+    async def wait_for_conversions(
+        self, 
+        task_ids: List[str], 
+        timeout: Optional[float] = None,
+        progress_callback: Optional[Callable[[str], None]] = None
+    ) -> bool:
+        """Wait for multiple texture conversion tasks to complete."""
+        queue = get_texture_queue()
+        return await queue.wait_for_all(task_ids, timeout, progress_callback)
+    
+    def get_conversion_status(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """Get the status of a texture conversion task."""
+        queue = get_texture_queue()
+        return queue.get_task_status(task_id)
+    
+    def get_queue_status(self) -> Dict[str, Any]:
+        """Get overall texture processing queue status."""
+        queue = get_texture_queue()
+        return queue.get_queue_status()
+    
+    async def process_textures_parallel(
+        self,
+        textures: List[Tuple[bpy.types.Image, str, str, Optional[str]]],
+        progress_callback: Optional[Callable[[str], None]] = None,
+        timeout: Optional[float] = None
+    ) -> Dict[str, bool]:
+        """Process multiple textures in parallel and return results.
+        
+        Args:
+            textures: List of (bl_image, output_path, texture_type, dds_format) tuples
+            progress_callback: Optional progress callback function
+            timeout: Optional timeout in seconds
+            
+        Returns:
+            Dictionary mapping task_id to success status
+        """
+        if not textures:
+            return {}
+        
+        # Queue all tasks
+        task_ids = await self.queue_batch_conversion(textures, progress_callback)
+        
+        # Wait for completion
+        success = await self.wait_for_conversions(task_ids, timeout, progress_callback)
+        
+        # Collect results
+        results = {}
+        queue = get_texture_queue()
+        for task_id in task_ids:
+            task_status = queue.get_task_status(task_id)
+            if task_status:
+                results[task_id] = task_status.get('status') == 'completed'
+            else:
+                results[task_id] = False
+        
+        return results
+    
+    # --- Direct Conversion Methods ---
     
     async def convert_png_to_dds_async(
         self, 

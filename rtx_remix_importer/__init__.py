@@ -28,9 +28,11 @@ try:
     from .ui import panels
     try:
         from .operators.export_operator import ExportRemixModFile, InvalidateRemixAssets
+        from .operators import parallel_texture_operator
     except ImportError:
         ExportRemixModFile = None # Define as None if import fails
         InvalidateRemixAssets = None
+        parallel_texture_operator = None
 except ImportError as e:
     print(f"Error importing addon submodules: {e}")
     # Handle cases where submodules might be missing or cause errors on registration
@@ -97,6 +99,15 @@ if panels:
         classes_to_register.append(panels.BatchImportSelectedCaptures)
     if hasattr(panels, 'PT_RemixCapturePanel'):
         classes_to_register.append(panels.PT_RemixCapturePanel)
+
+# Add parallel texture processing operators
+if parallel_texture_operator:
+    if hasattr(parallel_texture_operator, 'REMIX_OT_ParallelTextureProcessor'):
+        classes_to_register.append(parallel_texture_operator.REMIX_OT_ParallelTextureProcessor)
+    if hasattr(parallel_texture_operator, 'REMIX_OT_QueueStatus'):
+        classes_to_register.append(parallel_texture_operator.REMIX_OT_QueueStatus)
+    if hasattr(parallel_texture_operator, 'REMIX_OT_ClearQueue'):
+        classes_to_register.append(parallel_texture_operator.REMIX_OT_ClearQueue)
 
 classes_tuple = tuple(classes_to_register)
 

@@ -159,24 +159,118 @@ class TextureExporter:
             'opacity': 'BC4_UNORM'
         }
     
-    async def export_texture_async(
-        self, 
-        bl_image: bpy.types.Image, 
-        texture_type: str,
-        progress_callback: Optional[Callable[[str], None]] = None
-    ) -> Optional[str]:
-        """Export a texture asynchronously."""
+    async def export_textures_parallel(
+        self,
+        texture_list: List[Tuple[bpy.types.Image, str]],
+        progress_callback: Optional[Callable[[str], None]] = None,
+        timeout: Optional[float] = None
+    ) -> Dict[str, Optional[str]]:
+        """Export multiple textures in parallel using the queue system.
+        
+        Args:
+            texture_list: List of (bl_image, texture_type) tuples
+            progress_callback: Optional progress callback function
+            timeout: Optional timeout in seconds
+            
+        Returns:
+            Dictionary mapping texture name to relative path (or None if failed)
+        """
         if not self.texture_processor.is_available():
             if progress_callback:
                 progress_callback("texconv.exe not found")
-            return None
+            return {}
         
         try:
             os.makedirs(self.textures_dir, exist_ok=True)
         except OSError as e:
             if progress_callback:
                 progress_callback(f"Could not create textures directory: {e}")
-            return None
+            return {}
+        
+        # Prepare tasks for queue
+        tasks = []
+        texture_map = {}  # Maps task info to texture name for result mapping
+        
+        for bl_image, texture_type in texture_list:
+            # Generate output filename
+            base_name, _ = os.path.splitext(bl_image.name)
+            type_suffix = self.type_suffixes.get(texture_type.lower(), "")
+            dds_file_name = f"{base_name}{type_suffix}.dds"
+            absolute_dds_path = os.path.normpath(os.path.join(self.textures_dir, dds_file_name))
+            
+            # Get DDS format
+            dds_format = self.format_map.get(texture_type.lower(), 'BC7_UNORM_SRGB')
+            
+            # Add to tasks
+            task_info = (bl_image, absolute_dds_path, texture_type, dds_format)
+            tasks.append(task_info)
+            texture_map[bl_image.name] = (absolute_dds_path, texture_type)
+        
+        if not tasks:
+            return {}
+        
+        # Process textures in parallel
+        if progress_callback:
+            progress_callback(f"Starting parallel processing of {len(tasks)} textures...")
+        
+        results = await self.texture_processor.process_textures_parallel(
+            tasks, progress_callback, timeout
+        )
+        
+        # Map results back to texture names and convert to relative paths
+        final_results = {}
+        for bl_image, texture_type in texture_list:
+            texture_name = bl_image.name
+            absolute_path, _ = texture_map[texture_name]
+            
+            # Find the corresponding task result
+            success = False
+            for task_id, task_success in results.items():
+                task_status = self.texture_processor.get_conversion_status(task_id)
+                if task_status and task_status.get('texture_name') == texture_name:
+                    success = task_success
+                    break
+            
+            if success and os.path.exists(absolute_path):
+                final_results[texture_name] = get_relative_path(self.sublayer_path, absolute_path)
+            else:
+                final_results[texture_name] = None
+                if progress_callback:
+                    progress_callback(f"Failed to export texture: {texture_name}")
+        
+        if progress_callback:
+            successful = sum(1 for v in final_results.values() if v is not None)
+            progress_callback(f"Completed texture export: {successful}/{len(final_results)} successful")
+        
+        return final_results
+    
+    async def export_texture_async(
+        self, 
+        bl_image: bpy.types.Image, 
+        texture_type: str,
+        progress_callback: Optional[Callable[[str], None]] = None
+    ) -> Optional[str]:
+        """Export a single texture asynchronously."""
+        results = await self.export_textures_parallel(
+            [(bl_image, texture_type)], 
+            progress_callback
+        )
+        return results.get(bl_image.name)
+    
+    async def queue_texture_export(
+        self,
+        bl_image: bpy.types.Image,
+        texture_type: str,
+        progress_callback: Optional[Callable[[str], None]] = None
+    ) -> str:
+        """Queue a texture export and return task ID for tracking."""
+        if not self.texture_processor.is_available():
+            raise RuntimeError("texconv.exe not found")
+        
+        try:
+            os.makedirs(self.textures_dir, exist_ok=True)
+        except OSError as e:
+            raise RuntimeError(f"Could not create textures directory: {e}")
         
         # Generate output filename
         base_name, _ = os.path.splitext(bl_image.name)
@@ -187,31 +281,18 @@ class TextureExporter:
         # Get DDS format
         dds_format = self.format_map.get(texture_type.lower(), 'BC7_UNORM_SRGB')
         
-        # Convert texture
-        success = await self.texture_processor.convert_texture_async(
-            bl_image, absolute_dds_path, dds_format, progress_callback
+        # Queue the conversion
+        return await self.texture_processor.queue_texture_conversion(
+            bl_image, absolute_dds_path, texture_type, dds_format, progress_callback
         )
-        
-        if success:
-            return get_relative_path(self.sublayer_path, absolute_dds_path)
-        
-        return None
     
-    def export_texture_sync(
-        self, 
-        bl_image: bpy.types.Image, 
-        texture_type: str
-    ) -> Optional[str]:
-        """Export a texture synchronously (for compatibility)."""
-        try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            return loop.run_until_complete(self.export_texture_async(bl_image, texture_type))
-        except Exception as e:
-            print(f"Error in sync texture export: {e}")
-            return None
-        finally:
-            loop.close()
+    def get_export_status(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """Get the status of a texture export task."""
+        return self.texture_processor.get_conversion_status(task_id)
+    
+    def get_queue_status(self) -> Dict[str, Any]:
+        """Get overall texture export queue status."""
+        return self.texture_processor.get_queue_status()
 
 # --- Node Analysis ---
 
