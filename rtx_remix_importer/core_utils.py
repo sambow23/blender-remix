@@ -7,6 +7,7 @@ import tempfile
 import subprocess
 import asyncio
 import threading
+import time
 from typing import Optional, Tuple, Dict, Any, List, Callable
 from concurrent.futures import ThreadPoolExecutor
 
@@ -26,8 +27,12 @@ def get_thread_pool():
     """Get or create the global thread pool for async operations."""
     global _thread_pool
     if _thread_pool is None:
-        # Increase max workers for better parallel processing
-        _thread_pool = ThreadPoolExecutor(max_workers=min(8, os.cpu_count() or 4))
+        # Use CPU count for optimal parallel processing
+        # Each worker will run its own texconv process, so we want one per core
+        cpu_count = os.cpu_count() or 4
+        max_workers = min(cpu_count, 8)  # Cap at 8 to prevent resource exhaustion
+        _thread_pool = ThreadPoolExecutor(max_workers=max_workers)
+        print(f"[TextureProcessor] Initialized thread pool with {max_workers} workers for {cpu_count} CPU cores")
     return _thread_pool
 
 def get_texture_queue():
@@ -200,18 +205,29 @@ class TextureTask:
         self.created_at = asyncio.get_event_loop().time()
 
 class TextureProcessingQueue:
-    """Manages a queue of texture processing tasks with parallel execution."""
+    """Manages a queue of texture processing tasks with parallel execution and batching."""
     
-    def __init__(self, max_concurrent_tasks: int = None):
-        self.max_concurrent_tasks = max_concurrent_tasks or min(4, os.cpu_count() or 2)
+    def __init__(self, max_concurrent_tasks: int = None, batch_size: int = None):
+        # Use CPU count for optimal parallel processing
+        cpu_count = os.cpu_count() or 4
+        self.max_concurrent_tasks = max_concurrent_tasks or min(cpu_count, 8)
+        self.batch_size = batch_size or 4  # Textures per batch
+        
         self.queue = asyncio.Queue()
         self.active_tasks = {}  # task_id -> TextureTask
         self.completed_tasks = {}  # task_id -> TextureTask
+        
+        # Use a semaphore that allows one texconv process per CPU core
         self.processing_semaphore = asyncio.Semaphore(self.max_concurrent_tasks)
         self.worker_tasks = []
         self.is_running = False
         self._task_counter = 0
         self._lock = asyncio.Lock()
+        
+        # Batching state
+        self._pending_batch = []
+        self._batch_timer = None
+        self._batch_timeout = 0.5  # Seconds to wait before processing incomplete batch
     
     async def start(self):
         """Start the queue processing workers."""
@@ -219,7 +235,7 @@ class TextureProcessingQueue:
             return
         
         self.is_running = True
-        # Create worker tasks
+        # Create worker tasks - one per CPU core for optimal texconv utilization
         for i in range(self.max_concurrent_tasks):
             worker = asyncio.create_task(self._worker(f"worker-{i}"))
             self.worker_tasks.append(worker)
@@ -227,6 +243,14 @@ class TextureProcessingQueue:
     async def stop(self):
         """Stop the queue processing workers."""
         self.is_running = False
+        
+        # Cancel batch timer if running
+        if self._batch_timer:
+            self._batch_timer.cancel()
+        
+        # Process any remaining batch
+        if self._pending_batch:
+            await self._process_pending_batch()
         
         # Cancel all worker tasks
         for worker in self.worker_tasks:
@@ -265,13 +289,53 @@ class TextureProcessingQueue:
         if not self.is_running:
             await self.start()
         
-        await self.queue.put(task)
-        self.active_tasks[task_id] = task
+        # Add to pending batch instead of directly to queue
+        await self._add_to_batch(task)
         
         if progress_callback:
-            progress_callback(f"Task {task_id} queued for processing")
+            progress_callback(f"Task {task_id} queued for batch processing")
         
         return task_id
+    
+    async def _add_to_batch(self, task: TextureTask):
+        """Add task to pending batch and process when batch is full."""
+        self._pending_batch.append(task)
+        self.active_tasks[task.task_id] = task
+        
+        # If batch is full, process it immediately
+        if len(self._pending_batch) >= self.batch_size:
+            await self._process_pending_batch()
+        else:
+            # Start/restart timer for incomplete batch
+            if self._batch_timer:
+                self._batch_timer.cancel()
+            self._batch_timer = asyncio.create_task(self._batch_timeout_handler())
+    
+    async def _batch_timeout_handler(self):
+        """Handle batch timeout - process incomplete batch after timeout."""
+        try:
+            await asyncio.sleep(self._batch_timeout)
+            if self._pending_batch:
+                await self._process_pending_batch()
+        except asyncio.CancelledError:
+            pass
+    
+    async def _process_pending_batch(self):
+        """Process the current pending batch."""
+        if not self._pending_batch:
+            return
+        
+        # Create batch from pending tasks
+        batch = self._pending_batch.copy()
+        self._pending_batch.clear()
+        
+        # Cancel timer
+        if self._batch_timer:
+            self._batch_timer.cancel()
+            self._batch_timer = None
+        
+        # Add batch to processing queue
+        await self.queue.put(batch)
     
     async def add_batch(self, tasks: List[Tuple[bpy.types.Image, str, str, Optional[str]]],
                        progress_callback: Optional[Callable[[str], None]] = None) -> List[str]:
@@ -281,6 +345,10 @@ class TextureProcessingQueue:
         for bl_image, output_path, texture_type, dds_format in tasks:
             task_id = await self.add_task(bl_image, output_path, texture_type, dds_format, progress_callback)
             task_ids.append(task_id)
+        
+        # Force process any remaining batch
+        if self._pending_batch:
+            await self._process_pending_batch()
         
         if progress_callback:
             progress_callback(f"Added {len(task_ids)} tasks to processing queue")
@@ -360,60 +428,78 @@ class TextureProcessingQueue:
             "active_tasks": len(self.active_tasks),
             "completed_tasks": len(self.completed_tasks),
             "max_concurrent": self.max_concurrent_tasks,
-            "worker_count": len(self.worker_tasks)
+            "worker_count": len(self.worker_tasks),
+            "batch_size": self.batch_size,
+            "pending_batch_size": len(self._pending_batch)
         }
     
     async def _worker(self, worker_name: str):
-        """Worker coroutine that processes tasks from the queue."""
+        """Worker coroutine that processes batches of tasks from the queue."""
         texture_processor = get_texture_processor()
         
         while self.is_running:
             try:
-                # Get task from queue with timeout
-                task = await asyncio.wait_for(self.queue.get(), timeout=1.0)
+                # Get batch from queue with timeout
+                batch = await asyncio.wait_for(self.queue.get(), timeout=1.0)
                 
+                # Acquire semaphore for this texconv process
                 async with self.processing_semaphore:
-                    task.status = "processing"
+                    if not batch:
+                        continue
                     
-                    if task.progress_callback:
-                        task.progress_callback(f"[{worker_name}] Processing {task.bl_image.name}")
+                    # Update all tasks in batch to processing status
+                    for task in batch:
+                        task.status = "processing"
+                        if task.progress_callback:
+                            task.progress_callback(f"[{worker_name}] Processing batch with {task.bl_image.name}")
                     
                     try:
-                        # Process the texture
-                        result = await texture_processor.convert_png_to_dds_async(
-                            task.bl_image,
-                            task.output_path,
-                            task.texture_type,
-                            task.dds_format,
-                            task.progress_callback
+                        # Prepare batch data for texconv
+                        batch_data = []
+                        for task in batch:
+                            batch_data.append((task.bl_image, task.output_path, task.texture_type, task.dds_format))
+                        
+                        # Process entire batch with single texconv call
+                        batch_results = await texture_processor.convert_texture_batch_async(
+                            batch_data,
+                            progress_callback=lambda msg: self._batch_progress_callback(batch, msg)
                         )
                         
-                        task.result = result
-                        task.status = "completed" if result else "failed"
-                        
-                        if not result:
-                            task.error = "Conversion failed"
+                        # Update individual task results
+                        for i, task in enumerate(batch):
+                            if i < len(batch_results):
+                                task.result = batch_results[i]
+                                task.status = "completed" if batch_results[i] else "failed"
+                                if not batch_results[i]:
+                                    task.error = "Batch conversion failed"
+                            else:
+                                task.result = False
+                                task.status = "failed"
+                                task.error = "Batch processing error"
                         
                     except Exception as e:
-                        task.status = "failed"
-                        task.error = str(e)
-                        if task.progress_callback:
-                            task.progress_callback(f"Error processing {task.bl_image.name}: {e}")
+                        # Mark all tasks in batch as failed
+                        for task in batch:
+                            task.status = "failed"
+                            task.error = str(e)
+                            if task.progress_callback:
+                                task.progress_callback(f"Error processing batch with {task.bl_image.name}: {e}")
                     
                     finally:
-                        # Move task from active to completed
-                        if task.task_id in self.active_tasks:
-                            del self.active_tasks[task.task_id]
-                        self.completed_tasks[task.task_id] = task
+                        # Move all tasks from active to completed
+                        for task in batch:
+                            if task.task_id in self.active_tasks:
+                                del self.active_tasks[task.task_id]
+                            self.completed_tasks[task.task_id] = task
+                            
+                            if task.progress_callback:
+                                status_msg = "completed successfully" if task.status == "completed" else f"failed: {task.error}"
+                                task.progress_callback(f"[{worker_name}] Task {task.task_id} {status_msg}")
                         
                         self.queue.task_done()
-                        
-                        if task.progress_callback:
-                            status_msg = "completed successfully" if task.status == "completed" else f"failed: {task.error}"
-                            task.progress_callback(f"[{worker_name}] Task {task.task_id} {status_msg}")
             
             except asyncio.TimeoutError:
-                # No tasks in queue, continue
+                # No batches in queue, continue
                 continue
             except asyncio.CancelledError:
                 # Worker was cancelled
@@ -421,6 +507,12 @@ class TextureProcessingQueue:
             except Exception as e:
                 print(f"Worker {worker_name} error: {e}")
                 continue
+    
+    def _batch_progress_callback(self, batch: List[TextureTask], message: str):
+        """Forward progress messages to all tasks in a batch."""
+        for task in batch:
+            if task.progress_callback:
+                task.progress_callback(message)
 
 # --- Async Texture Processing ---
 
@@ -465,6 +557,10 @@ class TextureProcessor:
             'emissive': 'BC7_UNORM_SRGB',
             'opacity': 'BC4_UNORM'
         }
+        
+        # Batching configuration
+        self.batch_size = 4  # Number of textures to process per texconv call
+        self.max_concurrent_processes = min(os.cpu_count() or 4, 8)  # One per CPU core, max 8
     
     def _find_texconv(self) -> Optional[str]:
         """Find texconv.exe in the addon directory."""
@@ -483,6 +579,163 @@ class TextureProcessor:
     def get_texture_suffix(self, texture_type: str) -> str:
         """Get RTX Remix suffix for texture type."""
         return self.texture_type_suffixes.get(texture_type.lower(), "")
+    
+    # --- Batch Processing Methods ---
+    
+    async def convert_texture_batch_async(
+        self,
+        texture_batch: List[Tuple[bpy.types.Image, str, str, Optional[str]]],
+        progress_callback: Optional[Callable[[str], None]] = None
+    ) -> List[bool]:
+        """Convert a batch of textures using a single texconv process.
+        
+        Args:
+            texture_batch: List of (bl_image, output_path, texture_type, dds_format) tuples
+            progress_callback: Optional progress callback function
+            
+        Returns:
+            List of success status for each texture in the batch
+        """
+        if not self.is_available() or not texture_batch:
+            return [False] * len(texture_batch)
+        
+        def _convert_batch():
+            return self._convert_texture_batch_sync(texture_batch, progress_callback)
+        
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(get_thread_pool(), _convert_batch)
+    
+    def _convert_texture_batch_sync(
+        self,
+        texture_batch: List[Tuple[bpy.types.Image, str, str, Optional[str]]],
+        progress_callback: Optional[Callable[[str], None]] = None
+    ) -> List[bool]:
+        """Convert a batch of textures synchronously using a single texconv process."""
+        if not texture_batch:
+            return []
+        
+        results = [False] * len(texture_batch)
+        temp_files = []
+        
+        try:
+            if progress_callback:
+                progress_callback(f"Processing batch of {len(texture_batch)} textures...")
+            
+            # Group textures by format and output directory for optimal batching
+            format_groups = {}
+            for i, (bl_image, output_path, texture_type, dds_format) in enumerate(texture_batch):
+                if dds_format is None:
+                    dds_format = self.get_recommended_format(texture_type)
+                
+                output_dir = os.path.dirname(output_path)
+                texconv_format = self._format_map.get(dds_format, 'BC7_UNORM_SRGB')
+                
+                group_key = (output_dir, texconv_format)
+                if group_key not in format_groups:
+                    format_groups[group_key] = []
+                
+                format_groups[group_key].append((i, bl_image, output_path, texture_type, dds_format))
+            
+            # Process each format group with a single texconv call
+            for (output_dir, texconv_format), group_items in format_groups.items():
+                if progress_callback:
+                    progress_callback(f"Converting {len(group_items)} textures with format {texconv_format}...")
+                
+                # Create temporary input files for this group
+                group_temp_files = []
+                temp_to_final_mapping = {}
+                
+                for i, bl_image, output_path, texture_type, dds_format in group_items:
+                    # Create temporary PNG file
+                    temp_file = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+                    temp_input_path = temp_file.name
+                    temp_file.close()
+                    
+                    try:
+                        # Save Blender image to temporary file
+                        self._save_blender_image_to_file(bl_image, temp_input_path)
+                        group_temp_files.append(temp_input_path)
+                        temp_files.append(temp_input_path)
+                        
+                        # Map temp file to final output
+                        temp_base = os.path.splitext(os.path.basename(temp_input_path))[0]
+                        temp_output_path = os.path.join(output_dir, f"{temp_base}.dds")
+                        temp_to_final_mapping[temp_output_path] = (i, output_path)
+                        
+                    except Exception as e:
+                        if progress_callback:
+                            progress_callback(f"Error saving {bl_image.name}: {e}")
+                        continue
+                
+                if not group_temp_files:
+                    continue
+                
+                # Ensure output directory exists
+                os.makedirs(output_dir, exist_ok=True)
+                
+                # Run texconv on the entire batch
+                cmd = [
+                    self.texconv_path,
+                    *group_temp_files,  # All input files
+                    "-o", output_dir,
+                    "-ft", "dds",
+                    "-f", texconv_format,
+                    "-m", "0",  # Generate all mipmaps
+                    "-y",  # Overwrite existing
+                    "-nologo",
+                ]
+                
+                try:
+                    result = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                        shell=False,
+                        timeout=120  # 2 minute timeout for batch
+                    )
+                    
+                    if result.returncode == 0:
+                        # Check which files were successfully converted and rename them
+                        for temp_output_path, (batch_index, final_output_path) in temp_to_final_mapping.items():
+                            if os.path.exists(temp_output_path):
+                                try:
+                                    if temp_output_path != final_output_path:
+                                        os.replace(temp_output_path, final_output_path)
+                                    results[batch_index] = True
+                                    if progress_callback:
+                                        progress_callback(f"Converted: {os.path.basename(final_output_path)}")
+                                except Exception as e:
+                                    if progress_callback:
+                                        progress_callback(f"Error moving {temp_output_path}: {e}")
+                            else:
+                                if progress_callback:
+                                    progress_callback(f"Missing output: {temp_output_path}")
+                    else:
+                        if progress_callback:
+                            progress_callback(f"texconv batch failed: {result.stderr}")
+                
+                except subprocess.TimeoutExpired:
+                    if progress_callback:
+                        progress_callback("texconv batch timed out")
+                except Exception as e:
+                    if progress_callback:
+                        progress_callback(f"Error running texconv batch: {e}")
+        
+        finally:
+            # Cleanup temporary files
+            for temp_file in temp_files:
+                try:
+                    if os.path.exists(temp_file):
+                        os.remove(temp_file)
+                except:
+                    pass
+        
+        successful_count = sum(results)
+        if progress_callback:
+            progress_callback(f"Batch complete: {successful_count}/{len(texture_batch)} successful")
+        
+        return results
     
     # --- Queue Integration Methods ---
     
@@ -541,7 +794,7 @@ class TextureProcessor:
         progress_callback: Optional[Callable[[str], None]] = None,
         timeout: Optional[float] = None
     ) -> Dict[str, bool]:
-        """Process multiple textures in parallel and return results.
+        """Process multiple textures in parallel using batching and return results.
         
         Args:
             textures: List of (bl_image, output_path, texture_type, dds_format) tuples
@@ -554,7 +807,14 @@ class TextureProcessor:
         if not textures:
             return {}
         
-        # Queue all tasks
+        start_time = asyncio.get_event_loop().time()
+        
+        if progress_callback:
+            progress_callback(f"Starting parallel processing of {len(textures)} textures with batching...")
+            progress_callback(f"Using {self.max_concurrent_processes} concurrent texconv processes")
+            progress_callback(f"Batch size: {self.batch_size} textures per process")
+        
+        # Queue all tasks - they will be automatically batched
         task_ids = await self.queue_batch_conversion(textures, progress_callback)
         
         # Wait for completion
@@ -563,12 +823,28 @@ class TextureProcessor:
         # Collect results
         results = {}
         queue = get_texture_queue()
+        successful_count = 0
+        
         for task_id in task_ids:
             task_status = queue.get_task_status(task_id)
             if task_status:
-                results[task_id] = task_status.get('status') == 'completed'
+                task_success = task_status.get('status') == 'completed'
+                results[task_id] = task_success
+                if task_success:
+                    successful_count += 1
             else:
                 results[task_id] = False
+        
+        # Performance metrics
+        end_time = asyncio.get_event_loop().time()
+        total_time = end_time - start_time
+        
+        if progress_callback:
+            progress_callback(f"Parallel processing completed in {total_time:.2f} seconds")
+            progress_callback(f"Success rate: {successful_count}/{len(textures)} ({successful_count/len(textures)*100:.1f}%)")
+            if total_time > 0:
+                throughput = len(textures) / total_time
+                progress_callback(f"Throughput: {throughput:.2f} textures/second")
         
         return results
     
@@ -898,4 +1174,181 @@ class ProgressTracker:
 def cleanup_addon_resources():
     """Cleanup all addon resources."""
     cleanup_thread_pool()
-    get_stage_manager().cleanup_all() 
+    get_stage_manager().cleanup_all()
+
+# Global background processing state
+_background_processor = None
+
+class BackgroundTextureProcessor:
+    """Handles texture processing in the background without blocking Blender's main thread."""
+    
+    def __init__(self):
+        self.active_jobs = {}  # job_id -> job_info
+        self.completed_jobs = {}  # job_id -> results
+        self.job_counter = 0
+        self.timer_registered = False
+        
+    def start_background_job(self, textures: List[Tuple], progress_callback=None, completion_callback=None):
+        """Start a background texture processing job."""
+        self.job_counter += 1
+        job_id = f"texture_job_{self.job_counter}"
+        
+        job_info = {
+            'id': job_id,
+            'textures': textures,
+            'progress_callback': progress_callback,
+            'completion_callback': completion_callback,
+            'status': 'queued',
+            'progress': 0,
+            'total': len(textures),
+            'results': [],
+            'thread': None,
+            'start_time': time.time()
+        }
+        
+        self.active_jobs[job_id] = job_info
+        
+        # Start the processing thread
+        import threading
+        thread = threading.Thread(target=self._process_job_thread, args=(job_id,))
+        thread.daemon = True
+        job_info['thread'] = thread
+        thread.start()
+        
+        # Register timer if not already registered
+        if not self.timer_registered:
+            bpy.app.timers.register(self._timer_callback, first_interval=0.1, persistent=True)
+            self.timer_registered = True
+            
+        print(f"Started background texture job: {job_id} with {len(textures)} textures")
+        return job_id
+    
+    def _process_job_thread(self, job_id):
+        """Process textures in a background thread."""
+        job_info = self.active_jobs.get(job_id)
+        if not job_info:
+            return
+            
+        try:
+            job_info['status'] = 'processing'
+            texture_processor = get_texture_processor()
+            
+            if not texture_processor.is_available():
+                job_info['status'] = 'failed'
+                job_info['error'] = 'texconv.exe not available'
+                return
+            
+            # Process textures in batches
+            textures = job_info['textures']
+            batch_size = 4  # Process 4 textures per batch
+            results = []
+            
+            for i in range(0, len(textures), batch_size):
+                batch = textures[i:i + batch_size]
+                
+                # Process this batch
+                batch_results = texture_processor._convert_texture_batch_sync(
+                    batch,
+                    progress_callback=lambda msg: self._update_progress(job_id, msg)
+                )
+                
+                results.extend(batch_results)
+                job_info['progress'] = len(results)
+                
+                # Small delay to prevent overwhelming the system
+                time.sleep(0.1)
+                
+                # Check if job was cancelled
+                if job_info.get('cancelled', False):
+                    job_info['status'] = 'cancelled'
+                    return
+            
+            job_info['results'] = results
+            job_info['status'] = 'completed'
+            
+        except Exception as e:
+            job_info['status'] = 'failed'
+            job_info['error'] = str(e)
+            print(f"Background job {job_id} failed: {e}")
+    
+    def _update_progress(self, job_id, message):
+        """Update progress from background thread."""
+        job_info = self.active_jobs.get(job_id)
+        if job_info and job_info.get('progress_callback'):
+            # Store message for main thread to pick up
+            job_info['last_message'] = message
+    
+    def _timer_callback(self):
+        """Timer callback to check job status and update UI."""
+        completed_jobs = []
+        
+        for job_id, job_info in self.active_jobs.items():
+            # Update progress callback if available
+            if 'last_message' in job_info and job_info.get('progress_callback'):
+                try:
+                    job_info['progress_callback'](job_info['last_message'])
+                    del job_info['last_message']
+                except:
+                    pass  # Ignore callback errors
+            
+            # Check if job is completed
+            if job_info['status'] in ['completed', 'failed', 'cancelled']:
+                completed_jobs.append(job_id)
+                
+                # Call completion callback
+                if job_info.get('completion_callback'):
+                    try:
+                        job_info['completion_callback'](job_id, job_info)
+                    except Exception as e:
+                        print(f"Error in completion callback for {job_id}: {e}")
+        
+        # Move completed jobs
+        for job_id in completed_jobs:
+            self.completed_jobs[job_id] = self.active_jobs.pop(job_id)
+        
+        # Continue timer if there are active jobs
+        if self.active_jobs:
+            return 0.1  # Check again in 0.1 seconds
+        else:
+            self.timer_registered = False
+            return None  # Stop timer
+    
+    def get_job_status(self, job_id):
+        """Get status of a background job."""
+        if job_id in self.active_jobs:
+            job_info = self.active_jobs[job_id]
+            return {
+                'status': job_info['status'],
+                'progress': job_info['progress'],
+                'total': job_info['total'],
+                'elapsed': time.time() - job_info['start_time']
+            }
+        elif job_id in self.completed_jobs:
+            job_info = self.completed_jobs[job_id]
+            return {
+                'status': job_info['status'],
+                'progress': job_info['total'],
+                'total': job_info['total'],
+                'elapsed': time.time() - job_info['start_time'],
+                'results': job_info.get('results', [])
+            }
+        else:
+            return None
+    
+    def cancel_job(self, job_id):
+        """Cancel a background job."""
+        if job_id in self.active_jobs:
+            self.active_jobs[job_id]['cancelled'] = True
+            return True
+        return False
+    
+    def cleanup_completed_jobs(self):
+        """Clean up old completed jobs."""
+        self.completed_jobs.clear()
+
+def get_background_processor():
+    """Get or create the global background processor."""
+    global _background_processor
+    if _background_processor is None:
+        _background_processor = BackgroundTextureProcessor()
+    return _background_processor 

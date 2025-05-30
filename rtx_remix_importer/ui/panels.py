@@ -2344,3 +2344,63 @@ class BatchImportSelectedCaptures(bpy.types.Operator):
             
             # Add to batch collection
             batch_collection.objects.link(obj)
+
+class PT_RemixBackgroundProcessing(bpy.types.Panel):
+    """Panel for background texture processing status and controls"""
+    bl_label = "Background Processing"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "RTX Remix"
+    bl_parent_id = "PT_RemixExport"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        layout = self.layout
+        
+        # Get background processor status
+        try:
+            from .. import core_utils
+            background_processor = core_utils.get_background_processor()
+            
+            active_count = len(background_processor.active_jobs)
+            completed_count = len(background_processor.completed_jobs)
+            
+            # Status info
+            col = layout.column(align=True)
+            col.label(text=f"Active Jobs: {active_count}")
+            col.label(text=f"Completed Jobs: {completed_count}")
+            
+            # Show active job details
+            if active_count > 0:
+                box = layout.box()
+                box.label(text="Active Jobs:", icon='TIME')
+                
+                for job_id, job_info in background_processor.active_jobs.items():
+                    status = background_processor.get_job_status(job_id)
+                    if status:
+                        progress_pct = (status['progress'] / status['total']) * 100 if status['total'] > 0 else 0
+                        
+                        row = box.row()
+                        row.label(text=f"{job_id[-8:]}...")  # Show last 8 chars of job ID
+                        row.label(text=f"{progress_pct:.0f}%")
+                        
+                        # Cancel button for individual job
+                        op = row.operator("remix.cancel_background_job", text="", icon='X')
+                        op.job_id = job_id
+            
+            # Control buttons
+            row = layout.row(align=True)
+            row.operator("remix.background_job_status", text="Refresh Status")
+            
+            if active_count > 0:
+                row.operator("remix.cancel_all_background_jobs", text="Cancel All")
+            
+            if completed_count > 0:
+                layout.operator("remix.cleanup_completed_jobs", text="Cleanup Completed")
+            
+            # Test button (for development)
+            layout.separator()
+            layout.operator("remix.background_processing_test", text="Test Background Processing")
+            
+        except Exception as e:
+            layout.label(text=f"Error: {e}", icon='ERROR')

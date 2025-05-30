@@ -6,16 +6,17 @@ import bpy
 import asyncio
 import os
 import tempfile
+import time
 from bpy.types import Operator
 from bpy.props import BoolProperty, StringProperty, IntProperty
 from bpy_extras.io_utils import ExportHelper
 
 
 class REMIX_OT_ParallelTextureProcessor(Operator):
-    """Process textures in parallel using the queue system"""
+    """Process textures in parallel using the queue system with batching"""
     bl_idname = "remix.parallel_texture_processor"
     bl_label = "Parallel Texture Processor"
-    bl_description = "Process multiple textures in parallel for faster conversion"
+    bl_description = "Process multiple textures in parallel with batching for maximum performance"
     bl_options = {'REGISTER', 'UNDO'}
     
     selected_only: BoolProperty(
@@ -24,11 +25,19 @@ class REMIX_OT_ParallelTextureProcessor(Operator):
         default=False
     )
     
-    max_workers: IntProperty(
-        name="Max Workers",
-        description="Maximum number of parallel workers",
+    batch_size: IntProperty(
+        name="Batch Size",
+        description="Number of textures to process per texconv instance",
         default=4,
         min=1,
+        max=16
+    )
+    
+    max_workers: IntProperty(
+        name="Max Workers",
+        description="Maximum number of parallel texconv processes",
+        default=0,  # 0 = auto-detect based on CPU cores
+        min=0,
         max=16
     )
     
@@ -49,6 +58,14 @@ class REMIX_OT_ParallelTextureProcessor(Operator):
             if not texture_processor.is_available():
                 self.report({'ERROR'}, "texconv.exe not found. Cannot process textures.")
                 return {'CANCELLED'}
+            
+            # Configure batching
+            if self.batch_size != texture_processor.batch_size:
+                texture_processor.batch_size = self.batch_size
+            
+            # Configure worker count
+            if self.max_workers > 0:
+                texture_processor.max_concurrent_processes = min(self.max_workers, 16)
             
             # Collect textures to process
             textures_to_process = []
@@ -77,16 +94,31 @@ class REMIX_OT_ParallelTextureProcessor(Operator):
             
             textures_to_process = list(unique_textures.values())
             
-            self.report({'INFO'}, f"Starting parallel processing of {len(textures_to_process)} textures...")
+            # Show configuration info
+            cpu_count = os.cpu_count() or 4
+            actual_workers = texture_processor.max_concurrent_processes
+            
+            self.report({'INFO'}, 
+                f"Starting parallel processing: {len(textures_to_process)} textures, "
+                f"{actual_workers} workers, batch size {self.batch_size}")
+            
+            print(f"[Parallel Processor] Configuration:")
+            print(f"  CPU cores: {cpu_count}")
+            print(f"  Texconv processes: {actual_workers}")
+            print(f"  Batch size: {self.batch_size}")
+            print(f"  Total textures: {len(textures_to_process)}")
+            print(f"  Expected batches: {(len(textures_to_process) + self.batch_size - 1) // self.batch_size}")
             
             # Create temporary output directory
             temp_dir = tempfile.mkdtemp(prefix="remix_parallel_")
+            
+            start_time = time.time()
             
             def progress_callback(message):
                 print(f"[Parallel Processor] {message}")
             
             async def process_textures():
-                """Process textures using the parallel queue system."""
+                """Process textures using the parallel queue system with batching."""
                 # Prepare tasks
                 tasks = []
                 for bl_image, texture_type in textures_to_process:
@@ -96,7 +128,7 @@ class REMIX_OT_ParallelTextureProcessor(Operator):
                     
                     tasks.append((bl_image, output_path, texture_type, None))
                 
-                # Process in parallel
+                # Process in parallel with batching
                 results = await texture_processor.process_textures_parallel(
                     tasks,
                     progress_callback=progress_callback,
@@ -109,22 +141,42 @@ class REMIX_OT_ParallelTextureProcessor(Operator):
             try:
                 results = asyncio.run(process_textures())
                 
+                end_time = time.time()
+                total_time = end_time - start_time
+                
                 # Count successful conversions
                 successful = sum(1 for success in results.values() if success)
                 total = len(results)
                 
+                # Show performance metrics
+                throughput = total / total_time if total_time > 0 else 0
+                
                 # Show queue status
                 queue_status = texture_processor.get_queue_status()
-                progress_callback(f"Queue status: {queue_status}")
+                progress_callback(f"Final queue status: {queue_status}")
                 
-                self.report({'INFO'}, f"Parallel processing completed: {successful}/{total} textures successful")
+                performance_msg = (
+                    f"Parallel processing completed in {total_time:.2f}s: "
+                    f"{successful}/{total} successful ({throughput:.2f} textures/sec)"
+                )
+                
+                self.report({'INFO'}, performance_msg)
+                print(f"[Parallel Processor] {performance_msg}")
                 
                 # Show detailed results
+                failed_count = 0
                 for task_id, success in results.items():
                     task_status = texture_processor.get_conversion_status(task_id)
                     if task_status:
-                        status_msg = "SUCCESS" if success else f"FAILED: {task_status.get('error', 'Unknown error')}"
-                        print(f"  {task_status.get('texture_name', 'Unknown')}: {status_msg}")
+                        if success:
+                            print(f"  ✓ {task_status.get('texture_name', 'Unknown')}")
+                        else:
+                            failed_count += 1
+                            error_msg = task_status.get('error', 'Unknown error')
+                            print(f"  ✗ {task_status.get('texture_name', 'Unknown')}: {error_msg}")
+                
+                if failed_count > 0:
+                    print(f"[Parallel Processor] {failed_count} textures failed - check console for details")
                 
             except Exception as e:
                 self.report({'ERROR'}, f"Error during parallel processing: {e}")

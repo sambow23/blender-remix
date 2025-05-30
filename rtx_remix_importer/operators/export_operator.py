@@ -6,6 +6,7 @@ import subprocess
 import bmesh
 import mathutils
 import math
+import traceback
 from bpy_extras.io_utils import ExportHelper
 from bpy.props import StringProperty, BoolProperty, EnumProperty
 from bpy.types import Operator
@@ -15,6 +16,9 @@ try:
     USD_AVAILABLE = True
 except ImportError:
     USD_AVAILABLE = False
+
+# Import constants for addon directory access
+from .. import constants
 
 # --- Helper Functions ---
 
@@ -70,89 +74,68 @@ def ensure_mdl_files(project_root):
 # --- Material Export Helper ---
 
 def export_material(blender_material, sublayer_stage, project_root, sublayer_path, parent_mesh_path=None, obj=None):
-    """Exports a Blender material to the sublayer stage.
-    
-    Args:
-        blender_material: The Blender material to export
-        sublayer_stage: The USD stage to export to
-        project_root: The root directory of the Remix project
-        sublayer_path: The path to the sublayer file
-        parent_mesh_path: If provided, place the material under this mesh path instead of /RootNode/Looks
-        obj: The Blender object associated with this material, if available
-    """
-    if not blender_material or not USD_AVAILABLE:
+    """Exports a Blender material to the sublayer stage."""
+    if not blender_material:
         return None
 
-    print(f"  Exporting Material: {blender_material.name}")
-    
-    # Ensure MDL files are copied to the project
-    ensure_mdl_files(project_root)
+    print(f"Exporting Material: {blender_material.name}")
 
-    # Define material based on NVIDIA's style
+    # Ensure MDL files are copied to the project
+    mdl_source_dir = os.path.join(constants.ADDON_DIR, "materials")
+    mdl_target_dir = os.path.join(project_root, "assets", "remix_materials")
+    
+    os.makedirs(mdl_target_dir, exist_ok=True)
+    
+    copied_files = []
+    if os.path.exists(mdl_source_dir):
+        import shutil
+        for mdl_file in os.listdir(mdl_source_dir):
+            if mdl_file.endswith(".mdl"):
+                source_file = os.path.join(mdl_source_dir, mdl_file)
+                target_file = os.path.join(mdl_target_dir, mdl_file)
+                
+                if not os.path.exists(target_file) or os.path.getmtime(source_file) > os.path.getmtime(target_file):
+                    shutil.copy2(source_file, target_file)
+                    copied_files.append(mdl_file)
+    
+    if copied_files:
+        print(f"Copied MDL files to {mdl_target_dir}: {', '.join(copied_files)}")
+
+    # Create material path
     if parent_mesh_path and sublayer_stage.GetPrimAtPath(parent_mesh_path):
-        # NVIDIA Remix style: Material directly under XForms/MeshName/Looks
-        parent_name = parent_mesh_path.name
+        # NVIDIA Remix style - material under mesh
         xforms_path = parent_mesh_path.AppendPath("XForms")
-        
-        # Get mesh name from reference
         mesh_name = sanitize_prim_name(obj.name) if obj else "Suzanne"
         mesh_path = xforms_path.AppendPath(mesh_name)
         
         # Apply MaterialBindingAPI to mesh
         mesh_prim = sublayer_stage.OverridePrim(mesh_path)
+        schemas = mesh_prim.GetAppliedSchemas()
+        if "MaterialBindingAPI" not in schemas:
+            sublayer_stage.OverridePrim(mesh_path, {"apiSchemas": ["MaterialBindingAPI"]})
         
-        # Apply MaterialBindingAPI schema if not already applied
-        if not mesh_prim.HasAPI(UsdShade.MaterialBindingAPI):
-            UsdShade.MaterialBindingAPI.Apply(mesh_prim)
-        
-        # Create the Looks material
+        # Create material and shader paths
         looks_path = mesh_path.AppendPath("Looks")
         material_prim = sublayer_stage.DefinePrim(looks_path, "Material")
         
-        # Create shader under Looks
         shader_path = looks_path.AppendPath("Shader")
         shader_prim = sublayer_stage.DefinePrim(shader_path, "Shader")
         
-        # Set material connections
-        material_api = UsdShade.Material(material_prim)
-        material_api.CreateSurfaceOutput("mdl:surface").ConnectToSource(
-            UsdShade.Shader(shader_prim).CreateOutput("out", Sdf.ValueTypeNames.Token)
-        )
-        material_api.CreateDisplacementOutput("mdl:displacement").ConnectToSource(
-            UsdShade.Shader(shader_prim).CreateOutput("out", Sdf.ValueTypeNames.Token)
-        )
-        material_api.CreateVolumeOutput("mdl:volume").ConnectToSource(
-            UsdShade.Shader(shader_prim).CreateOutput("out", Sdf.ValueTypeNames.Token)
-        )
-        
-        # Set shader attributes
-        shader_prim.CreateAttribute("info:implementationSource", Sdf.ValueTypeNames.Token).Set("sourceAsset")
-        # Use direct MDL path without folder prefix
-        shader_prim.CreateAttribute("info:mdl:sourceAsset", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath("AperturePBR_Opacity.mdl"))
-        shader_prim.CreateAttribute("info:mdl:sourceAsset:subIdentifier", Sdf.ValueTypeNames.Token).Set("AperturePBR_Opacity")
-        
-        # Create shader output
-        UsdShade.Shader(shader_prim).CreateOutput("out", Sdf.ValueTypeNames.Token).SetRenderType("material")
-        
-        # Add explicit material binding to the mesh
+        # Add material binding
         binding_rel = mesh_prim.CreateRelationship("material:binding")
         binding_rel.SetTargets([looks_path])
         mesh_prim.CreateAttribute("material:binding:bindMaterialAs", Sdf.ValueTypeNames.Token).Set("strongerThanDescendants")
         
-        print(f"  Using NVIDIA Remix style material placement at: {looks_path}")
         mat_path = looks_path
-    
     else:
-        # Original style: Place under /RootNode/Looks for non-mesh materials (fallback)
+        # Standard material path
         looks_path = Sdf.Path("/RootNode/Looks")
         sublayer_stage.OverridePrim(looks_path)
         
-        # Use UUID-style name for material
         mat_base_name = sanitize_prim_name(blender_material.name)
         mat_name_sanitized = generate_uuid_name(mat_base_name, prefix="mat_")
         mat_path = looks_path.AppendPath(mat_name_sanitized)
         
-        # Define material and shader prims
         material_prim = sublayer_stage.OverridePrim(mat_path)
         material_prim.SetTypeName("Material")
         
@@ -160,64 +143,50 @@ def export_material(blender_material, sublayer_stage, project_root, sublayer_pat
         shader_path = mat_path.AppendPath(shader_name_sanitized)
         shader_prim = sublayer_stage.OverridePrim(shader_path)
         shader_prim.SetTypeName("Shader")
-        
-        # Set material connections
-        material_api = UsdShade.Material(material_prim)
-        material_api.CreateSurfaceOutput("mdl:surface").ConnectToSource(
-            UsdShade.Shader(shader_prim).CreateOutput("out", Sdf.ValueTypeNames.Token)
-        )
-        material_api.CreateDisplacementOutput("mdl:displacement").ConnectToSource(
-            UsdShade.Shader(shader_prim).CreateOutput("out", Sdf.ValueTypeNames.Token)
-        )
-        material_api.CreateVolumeOutput("mdl:volume").ConnectToSource(
-            UsdShade.Shader(shader_prim).CreateOutput("out", Sdf.ValueTypeNames.Token)
-        )
-        
-        # Set shader attributes
-        shader_prim.CreateAttribute("info:implementationSource", Sdf.ValueTypeNames.Token).Set("sourceAsset")
-        shader_prim.CreateAttribute("info:mdl:sourceAsset", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath("AperturePBR_Opacity.mdl"))
-        shader_prim.CreateAttribute("info:mdl:sourceAsset:subIdentifier", Sdf.ValueTypeNames.Token).Set("AperturePBR_Opacity")
-        
-        # Create shader output
-        UsdShade.Shader(shader_prim).CreateOutput("out", Sdf.ValueTypeNames.Token).SetRenderType("material")
-        
-        print(f"  Using standard material placement at: {mat_path}")
-    
-    # Get the shader API for texture connections
-    shader_api = UsdShade.Shader(shader_prim)
 
-    # --- Extract Parameters from Nodes --- 
-    # Basic implementation: Find Principled BSDF and extract common PBR values/textures
+    # Set up material connections
+    material_api = UsdShade.Material(material_prim)
+    shader_output = UsdShade.Shader(shader_prim).CreateOutput("out", Sdf.ValueTypeNames.Token)
+    shader_output.SetRenderType("material")
+    
+    material_api.CreateSurfaceOutput("mdl:surface").ConnectToSource(shader_output)
+    material_api.CreateDisplacementOutput("mdl:displacement").ConnectToSource(shader_output)
+    material_api.CreateVolumeOutput("mdl:volume").ConnectToSource(shader_output)
+
+    # Set shader attributes
+    shader_prim.CreateAttribute("info:implementationSource", Sdf.ValueTypeNames.Token).Set("sourceAsset")
+    shader_prim.CreateAttribute("info:mdl:sourceAsset", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath("AperturePBR_Opacity.mdl"))
+    shader_prim.CreateAttribute("info:mdl:sourceAsset:subIdentifier", Sdf.ValueTypeNames.Token).Set("AperturePBR_Opacity")
+
+    # Find Principled BSDF or group node
     principled_node = None
     if blender_material.use_nodes and blender_material.node_tree:
-        # First, look for direct Principled BSDF nodes
         for node in blender_material.node_tree.nodes:
             if node.type == 'BSDF_PRINCIPLED':
                 principled_node = node
-                print(f"  Found direct Principled BSDF node in material")
                 break
-        
-        # If no direct Principled BSDF found, check for node groups
-        if not principled_node:
-            for node in blender_material.node_tree.nodes:
-                if node.type == 'GROUP' and node.node_tree:
-                    # Check if this is the Aperture Opaque node group or similar
-                    group_name = node.node_tree.name
-                    print(f"  Checking node group: {group_name}")
+            elif node.type == 'GROUP' and node.node_tree:
+                # Check if this is an Aperture group or similar
+                group_name = node.node_tree.name.lower()
+                if any(keyword in group_name for keyword in ['aperture', 'pbr', 'remix']):
+                    principled_node = node
+                    break
                     
-                    # For known node groups like Aperture Opaque, use the group node itself
-                    if "aperture" in group_name.lower() or group_name == "Aperture Opaque":
-                        principled_node = node
-                        print(f"  Using Aperture Opaque node group as principled node")
-                        break
+                # Also check for common PBR input sockets
+                expected_inputs = ['Base Color', 'Albedo Color', 'Metallic', 'Roughness']
+                if any(input_name in [inp.name for inp in node.inputs] for input_name in expected_inputs):
+                    principled_node = node
+                    break
                     
-                    # For other groups, check if they contain a Principled BSDF
-                    for inner_node in node.node_tree.nodes:
-                        if inner_node.type == 'BSDF_PRINCIPLED':
-                            # Use the group node for input access
-                            principled_node = node
-                            print(f"  Found Principled BSDF inside node group '{group_name}', using group node")
-                            break
+                # Check for common output sockets
+                expected_outputs = ['BSDF', 'Shader', 'Surface']
+                for output in node.outputs:
+                    if output.name in expected_outputs and output.is_linked:
+                        # Check if connected to material output
+                        for link in output.links:
+                            if link.to_node.type == 'OUTPUT_MATERIAL':
+                                principled_node = node
+                                break
                     
                     if principled_node:
                         break
@@ -226,16 +195,28 @@ def export_material(blender_material, sublayer_stage, project_root, sublayer_pat
         print(f"  WARNING: Material '{blender_material.name}' has no Principled BSDF node. Exporting default shader.")
         return mat_path # Return material path even if parameters aren't set
 
-    # Helper to get connected image texture path AND EXPORT IT
-    def export_and_get_texture_path(socket_name, dds_format='BC7_UNORM_SRGB'):
-        # Use unified TextureProcessor
-        from .. import core_utils
-        texture_processor = core_utils.get_texture_processor()
-        
-        if not texture_processor.is_available():
-            print(f"  Skipping DDS export for {socket_name}: texconv.exe not found.")
-            return None
-        
+    # Collect all textures for parallel processing
+    texture_tasks = []
+    texture_mappings = []
+    
+    # Use unified TextureProcessor
+    from .. import core_utils
+    texture_processor = core_utils.get_texture_processor()
+    
+    if not texture_processor.is_available():
+        print(f"  Skipping texture export: texconv.exe not found.")
+        # Continue with constant values only
+    else:
+        # Ensure textures directory exists
+        textures_dir = os.path.join(project_root, "rtx-remix", "textures")
+        try:
+            os.makedirs(textures_dir, exist_ok=True)
+        except OSError as e:
+            print(f"  ERROR: Could not create textures directory: {textures_dir} - {e}")
+            texture_processor = None  # Disable texture processing
+
+    def find_texture_for_socket(socket_name, dds_format='BC7_UNORM_SRGB'):
+        """Find texture connected to a socket and add to processing queue."""
         # Handle different socket names based on node type
         is_group = principled_node.type == 'GROUP'
         socket = None
@@ -268,7 +249,7 @@ def export_material(blender_material, sublayer_stage, project_root, sublayer_pat
             
         if not socket:
             print(f"    Socket '{socket_name}' not found on node")
-            return None
+            return None, None
             
         image_node = None
         if socket and socket.is_linked:
@@ -289,17 +270,9 @@ def export_material(blender_material, sublayer_stage, project_root, sublayer_pat
             if node and node.type == 'TEX_IMAGE':
                 image_node = node
 
-        if image_node and image_node.image:
+        if image_node and image_node.image and texture_processor:
             bl_image = image_node.image
-            print(f"  Found texture '{bl_image.name}' for {socket_name}. Attempting DDS export...")
-            
-            # Ensure textures directory exists
-            textures_dir = os.path.join(project_root, "rtx-remix", "textures")
-            try:
-                 os.makedirs(textures_dir, exist_ok=True)
-            except OSError as e:
-                 print(f"  ERROR: Could not create textures directory: {textures_dir} - {e}")
-                 return None
+            print(f"  Found texture '{bl_image.name}' for {socket_name}. Queuing for parallel export...")
             
             # Get texture type for suffix and format
             texture_type = socket_name.lower()
@@ -317,36 +290,77 @@ def export_material(blender_material, sublayer_stage, project_root, sublayer_pat
             dds_file_name = f"{base_name}{type_suffix}.dds"
             absolute_dds_path = os.path.normpath(os.path.join(textures_dir, dds_file_name))
             
-            # Use unified TextureProcessor for conversion
-            def progress_callback(msg):
-                print(f"    {msg}")
+            # Add to parallel processing queue
+            texture_tasks.append((bl_image, absolute_dds_path, texture_type, dds_format))
             
-            try:
-                success = texture_processor.convert_png_to_dds_sync(
-                    bl_image, 
-                    absolute_dds_path, 
-                    texture_type=texture_type,
-                    dds_format=dds_format,
-                    progress_callback=progress_callback
-                )
-                
-                if success:
-                    print(f"    DDS Export successful for '{bl_image.name}'")
-                    # Calculate relative path from sublayer to the exported texture
-                    relative_texture_path = get_relative_path(sublayer_path, absolute_dds_path)
-                    return relative_texture_path
-                else:
-                    print(f"    ERROR: DDS export failed for '{bl_image.name}'")
-                    return None
-                    
-            except Exception as e:
-                print(f"  ERROR during DDS export for '{bl_image.name}': {e}")
-                return None
+            # Calculate relative path for later use
+            relative_texture_path = get_relative_path(sublayer_path, absolute_dds_path)
+            return bl_image, relative_texture_path
 
-        return None # No valid image node found
+        return None, None
 
+    # Collect all textures for parallel processing
+    diffuse_image, diffuse_rel_path = find_texture_for_socket('Base Color', 'BC7_UNORM_SRGB')
+    metallic_image, metallic_rel_path = find_texture_for_socket('Metallic', 'BC4_UNORM')
+    roughness_image, roughness_rel_path = find_texture_for_socket('Roughness', 'BC4_UNORM')
+    normal_image, normal_rel_path = find_texture_for_socket('Normal', 'BC5_UNORM')
+    
+    # Check for emission
+    enable_emission = False
+    emissive_image, emissive_rel_path = None, None
+    
+    # Check emission settings
+    emissive_socket_name = 'Emissive Color' if 'Emissive Color' in principled_node.inputs else 'Emission'
+    emissive_socket = principled_node.inputs.get(emissive_socket_name)
+    
+    if emissive_socket:
+        if emissive_socket.is_linked:
+            enable_emission = True
+            emissive_image, emissive_rel_path = find_texture_for_socket(emissive_socket_name, 'BC7_UNORM_SRGB')
+        else:
+            # Check if emissive color is not black
+            emissive_color = emissive_socket.default_value
+            if len(emissive_color) >= 3 and any(c > 0.001 for c in emissive_color[:3]):
+                enable_emission = True
+
+    # Process all textures in parallel if any were found
+    if texture_tasks and texture_processor:
+        print(f"  Processing {len(texture_tasks)} textures in background...")
+        
+        # Use background processing to avoid blocking Blender's main thread
+        from .. import core_utils
+        background_processor = core_utils.get_background_processor()
+        
+        # Create progress callback
+        def progress_callback(msg):
+            print(f"    {msg}")
+        
+        # Create completion callback that will be called when processing is done
+        def completion_callback(job_id, job_info):
+            if job_info['status'] == 'completed':
+                successful_count = sum(1 for success in job_info['results'] if success)
+                print(f"    Background texture processing completed: {successful_count}/{len(texture_tasks)} successful")
+            elif job_info['status'] == 'failed':
+                print(f"    Background texture processing failed: {job_info.get('error', 'Unknown error')}")
+            else:
+                print(f"    Background texture processing {job_info['status']}")
+        
+        # Start background job
+        job_id = background_processor.start_background_job(
+            texture_tasks,
+            progress_callback=progress_callback,
+            completion_callback=completion_callback
+        )
+        
+        print(f"    Started background job: {job_id}")
+        print(f"    Note: Textures are processing in background. Material will use existing textures if available.")
+        
+        # For now, we'll continue with the export using existing texture paths
+        # The background job will update the textures asynchronously
+        # This allows the export to complete immediately without blocking
+
+    # Set material attributes based on processing results
     # Diffuse / Albedo (BC7 SRGB)
-    diffuse_rel_path = export_and_get_texture_path('Base Color', dds_format='BC7_UNORM_SRGB')
     if diffuse_rel_path:
         shader_prim.CreateAttribute("inputs:diffuse_texture", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(diffuse_rel_path))
         print(f"    Set diffuse_texture: {diffuse_rel_path}")
@@ -363,7 +377,6 @@ def export_material(blender_material, sublayer_stage, project_root, sublayer_pat
         print(f"    Set diffuse_color_constant: {base_color[:3]}")
 
     # Metallic (BC4 Unorm - single channel)
-    metallic_rel_path = export_and_get_texture_path('Metallic', dds_format='BC4_UNORM')
     if metallic_rel_path:
         shader_prim.CreateAttribute("inputs:metallic_texture", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(metallic_rel_path))
         print(f"    Set metallic_texture: {metallic_rel_path}")
@@ -376,7 +389,6 @@ def export_material(blender_material, sublayer_stage, project_root, sublayer_pat
         print(f"    Set metallic_constant: {metallic_val}")
 
     # Roughness (BC4 Unorm - single channel)
-    roughness_rel_path = export_and_get_texture_path('Roughness', dds_format='BC4_UNORM')
     if roughness_rel_path:
         shader_prim.CreateAttribute("inputs:reflectionroughness_texture", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(roughness_rel_path))
         print(f"    Set reflectionroughness_texture: {roughness_rel_path}")
@@ -388,75 +400,30 @@ def export_material(blender_material, sublayer_stage, project_root, sublayer_pat
         shader_prim.CreateAttribute("inputs:reflection_roughness_constant", Sdf.ValueTypeNames.Float).Set(roughness_val)
         print(f"    Set reflection_roughness_constant: {roughness_val}")
 
-    # Normals (BC5 Unorm / ATI2 - two channel)
-    normal_rel_path = export_and_get_texture_path('Normal', dds_format='BC5_UNORM')
+    # Normal Map (BC5 Unorm - two channel)
     if normal_rel_path:
-        # Create normal map texture attribute
         shader_prim.CreateAttribute("inputs:normalmap_texture", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(normal_rel_path))
-        # Add encoding attribute for normal maps (2 = tangent_space_dx)
-        shader_prim.CreateAttribute("inputs:encoding", Sdf.ValueTypeNames.Int).Set(2)
+        shader_prim.CreateAttribute("inputs:encoding", Sdf.ValueTypeNames.Int).Set(2)  # Tangent space normal
         print(f"    Set normalmap_texture: {normal_rel_path}")
-        print(f"    Set encoding: 2 (tangent_space_dx)")
-    # else: No constant for normal map in this schema
 
-    # Emissive (BC7 SRGB for emissive mask texture)
-    # First check if emission is enabled in the material
-    enable_emission = False
-    emissive_intensity = 0.0
-    
-    # Check for Enable Emission input (for Aperture Opaque node group)
-    if 'Enable Emission' in principled_node.inputs:
-        enable_emission_socket = principled_node.inputs['Enable Emission']
-        if enable_emission_socket.is_linked:
-            # If linked, we can't easily determine the value, so assume enabled
-            enable_emission = True
-        else:
-            # Use the default value
-            enable_emission = bool(enable_emission_socket.default_value)
-    elif principled_node.type != 'GROUP' and 'Emission' in principled_node.inputs:
-        # For standard Principled BSDF, check if emission strength > 0
-        emission_socket = principled_node.inputs['Emission']
-        if emission_socket.is_linked or any(emission_socket.default_value[:3]):
-            enable_emission = True
-    elif principled_node.type == 'GROUP':
-        # For node groups, check if Emissive Color socket exists and has value/connection
-        emissive_socket = principled_node.inputs.get('Emissive Color')
-        if emissive_socket and (emissive_socket.is_linked or any(emissive_socket.default_value[:3])):
-            enable_emission = True
-    
-    # Get emissive intensity
-    if 'Emissive Intensity' in principled_node.inputs:
-        intensity_socket = principled_node.inputs['Emissive Intensity']
-        if not intensity_socket.is_linked:
-            emissive_intensity = float(intensity_socket.default_value)
-        else:
-            emissive_intensity = 1.0  # Default if linked
-    elif principled_node.type != 'GROUP' and 'Emission Strength' in principled_node.inputs:
-        # For standard Principled BSDF
-        strength_socket = principled_node.inputs['Emission Strength']
-        if not strength_socket.is_linked:
-            emissive_intensity = float(strength_socket.default_value)
-        else:
-            emissive_intensity = 1.0  # Default if linked
-    else:
-        # Default intensity if no specific socket found
-        emissive_intensity = 1.0 if enable_emission else 0.0
-    
-    # Set enable_emission attribute
-    shader_prim.CreateAttribute("inputs:enable_emission", Sdf.ValueTypeNames.Bool).Set(enable_emission)
-    print(f"    Set enable_emission: {enable_emission}")
-    
+    # Emission handling
     if enable_emission:
-        # Export emissive mask texture or color
-        emissive_socket_name = 'Emissive Color' if 'Emissive Color' in principled_node.inputs else 'Emission'
-        emissive_rel_path = export_and_get_texture_path(emissive_socket_name, dds_format='BC7_UNORM_SRGB')
+        # Set emissive intensity
+        emissive_intensity = 1.0
         
+        # Try to get emission strength from the material
+        if principled_node.type != 'GROUP':
+            # Standard Principled BSDF has Emission Strength
+            emission_strength_socket = principled_node.inputs.get('Emission Strength')
+            if emission_strength_socket:
+                emissive_intensity = emission_strength_socket.default_value
+        
+        # Export emissive mask texture or color
         if emissive_rel_path:
             shader_prim.CreateAttribute("inputs:emissive_mask_texture", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(emissive_rel_path))
             print(f"    Set emissive_mask_texture: {emissive_rel_path}")
         else:
             # Set emissive color constant if no texture
-            emissive_socket = principled_node.inputs.get(emissive_socket_name)
             if emissive_socket:
                 emissive_color = emissive_socket.default_value
                 if len(emissive_color) >= 3:

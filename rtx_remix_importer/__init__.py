@@ -29,10 +29,12 @@ try:
     try:
         from .operators.export_operator import ExportRemixModFile, InvalidateRemixAssets
         from .operators import parallel_texture_operator
+        from .operators import background_status_operator
     except ImportError:
         ExportRemixModFile = None # Define as None if import fails
         InvalidateRemixAssets = None
         parallel_texture_operator = None
+        background_status_operator = None
 except ImportError as e:
     print(f"Error importing addon submodules: {e}")
     # Handle cases where submodules might be missing or cause errors on registration
@@ -108,6 +110,19 @@ if parallel_texture_operator:
         classes_to_register.append(parallel_texture_operator.REMIX_OT_QueueStatus)
     if hasattr(parallel_texture_operator, 'REMIX_OT_ClearQueue'):
         classes_to_register.append(parallel_texture_operator.REMIX_OT_ClearQueue)
+
+# Add background processing operators
+if background_status_operator:
+    if hasattr(background_status_operator, 'REMIX_OT_BackgroundJobStatus'):
+        classes_to_register.append(background_status_operator.REMIX_OT_BackgroundJobStatus)
+    if hasattr(background_status_operator, 'REMIX_OT_CancelBackgroundJob'):
+        classes_to_register.append(background_status_operator.REMIX_OT_CancelBackgroundJob)
+    if hasattr(background_status_operator, 'REMIX_OT_CancelAllBackgroundJobs'):
+        classes_to_register.append(background_status_operator.REMIX_OT_CancelAllBackgroundJobs)
+    if hasattr(background_status_operator, 'REMIX_OT_CleanupCompletedJobs'):
+        classes_to_register.append(background_status_operator.REMIX_OT_CleanupCompletedJobs)
+    if hasattr(background_status_operator, 'REMIX_OT_BackgroundProcessingTest'):
+        classes_to_register.append(background_status_operator.REMIX_OT_BackgroundProcessingTest)
 
 classes_tuple = tuple(classes_to_register)
 
