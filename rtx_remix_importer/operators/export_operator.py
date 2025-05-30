@@ -272,7 +272,7 @@ def export_material(blender_material, sublayer_stage, project_root, sublayer_pat
 
         if image_node and image_node.image and texture_processor:
             bl_image = image_node.image
-            print(f"  Found texture '{bl_image.name}' for {socket_name}. Queuing for parallel export...")
+            print(f"  Found texture '{bl_image.name}' for {socket_name}. Preparing for background processing...")
             
             # Get texture type for suffix and format
             texture_type = socket_name.lower()
@@ -290,11 +290,18 @@ def export_material(blender_material, sublayer_stage, project_root, sublayer_pat
             dds_file_name = f"{base_name}{type_suffix}.dds"
             absolute_dds_path = os.path.normpath(os.path.join(textures_dir, dds_file_name))
             
-            # Add to parallel processing queue
+            # Add to parallel processing queue (only once)
             texture_tasks.append((bl_image, absolute_dds_path, texture_type, dds_format))
             
             # Calculate relative path for later use
             relative_texture_path = get_relative_path(sublayer_path, absolute_dds_path)
+            
+            # Check if texture already exists from previous processing
+            if os.path.exists(absolute_dds_path):
+                print(f"    Using existing texture: {relative_texture_path}")
+            else:
+                print(f"    Will process texture: {relative_texture_path}")
+            
             return bl_image, relative_texture_path
 
         return None, None
@@ -305,7 +312,7 @@ def export_material(blender_material, sublayer_stage, project_root, sublayer_pat
     roughness_image, roughness_rel_path = find_texture_for_socket('Roughness', 'BC4_UNORM')
     normal_image, normal_rel_path = find_texture_for_socket('Normal', 'BC5_UNORM')
     
-    # Check for emission
+    # Check for emission and collect emissive textures
     enable_emission = False
     emissive_image, emissive_rel_path = None, None
     
@@ -323,9 +330,34 @@ def export_material(blender_material, sublayer_stage, project_root, sublayer_pat
             if len(emissive_color) >= 3 and any(c > 0.001 for c in emissive_color[:3]):
                 enable_emission = True
 
+    # Check for opacity/alpha
+    opacity_image, opacity_rel_path = None, None
+    opacity_socket = principled_node.inputs.get('Alpha')
+    if opacity_socket and opacity_socket.is_linked:
+        opacity_image, opacity_rel_path = find_texture_for_socket('Alpha', 'BC4_UNORM')
+
+    # Check for specular
+    specular_image, specular_rel_path = None, None
+    specular_socket = principled_node.inputs.get('Specular')
+    if specular_socket and specular_socket.is_linked:
+        specular_image, specular_rel_path = find_texture_for_socket('Specular', 'BC4_UNORM')
+
     # Process all textures in parallel if any were found
     if texture_tasks and texture_processor:
-        print(f"  Processing {len(texture_tasks)} textures in background...")
+        print(f"  Found {len(texture_tasks)} textures for background processing...")
+        
+        # Check how many already exist
+        existing_count = 0
+        for bl_image, output_path, texture_type, dds_format in texture_tasks:
+            if os.path.exists(output_path):
+                existing_count += 1
+        
+        new_textures_count = len(texture_tasks) - existing_count
+        
+        if existing_count > 0:
+            print(f"    {existing_count} textures already exist and will be reused")
+        if new_textures_count > 0:
+            print(f"    {new_textures_count} textures will be processed in background")
         
         # Use background processing to avoid blocking Blender's main thread
         from .. import core_utils
@@ -345,19 +377,21 @@ def export_material(blender_material, sublayer_stage, project_root, sublayer_pat
             else:
                 print(f"    Background texture processing {job_info['status']}")
         
-        # Start background job
-        job_id = background_processor.start_background_job(
-            texture_tasks,
-            progress_callback=progress_callback,
-            completion_callback=completion_callback
-        )
+        # Start background job only if there are new textures to process
+        if new_textures_count > 0:
+            job_id = background_processor.start_background_job(
+                texture_tasks,
+                progress_callback=progress_callback,
+                completion_callback=completion_callback
+            )
+            
+            print(f"    Started background job: {job_id}")
+        else:
+            print(f"    All textures already exist - no background processing needed")
         
-        print(f"    Started background job: {job_id}")
-        print(f"    Note: Textures are processing in background. Material will use existing textures if available.")
+        print(f"    Material export continuing with existing/queued texture paths...")
         
-        # For now, we'll continue with the export using existing texture paths
-        # The background job will update the textures asynchronously
-        # This allows the export to complete immediately without blocking
+        # The export continues immediately using the texture paths (existing or future)
 
     # Set material attributes based on processing results
     # Diffuse / Albedo (BC7 SRGB)
@@ -436,7 +470,31 @@ def export_material(blender_material, sublayer_stage, project_root, sublayer_pat
         shader_prim.CreateAttribute("inputs:emissive_intensity", Sdf.ValueTypeNames.Float).Set(emissive_intensity)
         print(f"    Set emissive_intensity: {emissive_intensity}")
 
-    # TODO: Opacity etc.
+    # Opacity/Alpha handling
+    if opacity_rel_path:
+        shader_prim.CreateAttribute("inputs:opacity_texture", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(opacity_rel_path))
+        print(f"    Set opacity_texture: {opacity_rel_path}")
+    else:
+        # Check for alpha value
+        alpha_socket = principled_node.inputs.get('Alpha')
+        if alpha_socket:
+            alpha_val = alpha_socket.default_value
+            if alpha_val < 1.0:  # Only set if not fully opaque
+                shader_prim.CreateAttribute("inputs:opacity_constant", Sdf.ValueTypeNames.Float).Set(alpha_val)
+                print(f"    Set opacity_constant: {alpha_val}")
+
+    # Specular handling
+    if specular_rel_path:
+        shader_prim.CreateAttribute("inputs:specular_texture", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(specular_rel_path))
+        print(f"    Set specular_texture: {specular_rel_path}")
+    else:
+        # Check for specular value
+        specular_socket = principled_node.inputs.get('Specular')
+        if specular_socket:
+            specular_val = specular_socket.default_value
+            if specular_val != 0.5:  # Only set if not default value
+                shader_prim.CreateAttribute("inputs:specular_constant", Sdf.ValueTypeNames.Float).Set(specular_val)
+                print(f"    Set specular_constant: {specular_val}")
 
     print(f"  Finished exporting Material: {blender_material.name} to {mat_path}")
     return mat_path
@@ -1686,3 +1744,55 @@ class TestApplyAllTransforms(Operator):
             self.report({'INFO'}, "All selected objects already have identity transforms.")
             
         return {'FINISHED'}
+
+# --- Material Replacement Export Helper ---
+
+def export_material_replacement(operator, context, obj, sublayer_stage, project_root, target_sublayer_path):
+    """Exports material replacement for an existing mesh object."""
+    if not obj or obj.type != 'MESH':
+        return False
+
+    print(f"\n--- Material Replacement for Mesh: {obj.name} ---")
+
+    # Check if object has a stored USD prim path
+    usd_prim_path = obj.get("usd_prim_path", None)
+    if not usd_prim_path:
+        operator.report({'WARNING'}, f"Object '{obj.name}' has no stored USD prim path. Cannot perform material replacement.")
+        return False
+
+    print(f"  Using stored USD prim path: {usd_prim_path}")
+
+    # Get the material to export
+    bl_mat = None
+    if obj.material_slots:
+        bl_mat = obj.material_slots[0].material
+        if not bl_mat:
+            operator.report({'WARNING'}, f"Object '{obj.name}' has no material to replace.")
+            return False
+    else:
+        operator.report({'WARNING'}, f"Object '{obj.name}' has no material slots.")
+        return False
+
+    try:
+        # Convert string path to Sdf.Path
+        prim_path = Sdf.Path(usd_prim_path)
+        
+        # Export material using the stored prim path as parent
+        material_path = export_material(bl_mat, sublayer_stage, project_root, target_sublayer_path, parent_mesh_path=prim_path, obj=obj)
+        
+        if material_path:
+            print(f"  Successfully replaced material for {obj.name} at {prim_path}")
+            # Update stored material path
+            obj["remix_material_path"] = str(material_path)
+            return True
+        else:
+            operator.report({'ERROR'}, f"Failed to export replacement material for {obj.name}")
+            return False
+            
+    except Exception as e:
+        operator.report({'ERROR'}, f"Error during material replacement for {obj.name}: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+# --- Core Export Logic Helper ---

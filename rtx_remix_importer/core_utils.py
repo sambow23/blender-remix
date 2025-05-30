@@ -543,7 +543,8 @@ class TextureProcessor:
             'metallic': ".m.rtex",
             'emission': ".e.rtex",
             'emissive': ".e.rtex",
-            'opacity': ".o.rtex"
+            'opacity': ".o.rtex",
+            'specular': ".s.rtex"
         }
         
         # DDS format recommendations by texture type
@@ -555,7 +556,8 @@ class TextureProcessor:
             'metallic': 'BC4_UNORM',
             'emission': 'BC7_UNORM_SRGB',
             'emissive': 'BC7_UNORM_SRGB',
-            'opacity': 'BC4_UNORM'
+            'opacity': 'BC4_UNORM',
+            'specular': 'BC4_UNORM'
         }
         
         # Batching configuration
@@ -621,9 +623,27 @@ class TextureProcessor:
             if progress_callback:
                 progress_callback(f"Processing batch of {len(texture_batch)} textures...")
             
+            # First, check which textures already exist and skip them
+            textures_to_process = []
+            for i, (bl_image, output_path, texture_type, dds_format) in enumerate(texture_batch):
+                if os.path.exists(output_path):
+                    if progress_callback:
+                        progress_callback(f"Skipping existing texture: {os.path.basename(output_path)}")
+                    results[i] = True  # Mark as successful since file exists
+                else:
+                    textures_to_process.append((i, bl_image, output_path, texture_type, dds_format))
+            
+            if not textures_to_process:
+                if progress_callback:
+                    progress_callback(f"All {len(texture_batch)} textures already exist - skipping batch")
+                return results
+            
+            if progress_callback:
+                progress_callback(f"Processing {len(textures_to_process)} new textures (skipped {len(texture_batch) - len(textures_to_process)} existing)...")
+            
             # Group textures by format and output directory for optimal batching
             format_groups = {}
-            for i, (bl_image, output_path, texture_type, dds_format) in enumerate(texture_batch):
+            for i, bl_image, output_path, texture_type, dds_format in textures_to_process:
                 if dds_format is None:
                     dds_format = self.get_recommended_format(texture_type)
                 
