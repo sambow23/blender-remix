@@ -5,6 +5,7 @@ import tempfile
 import subprocess
 import bmesh
 import mathutils
+import math
 from bpy_extras.io_utils import ExportHelper
 from bpy.props import StringProperty, BoolProperty, EnumProperty
 from bpy.types import Operator
@@ -99,12 +100,10 @@ def export_material(blender_material, sublayer_stage, project_root, sublayer_pat
         
         # Apply MaterialBindingAPI to mesh
         mesh_prim = sublayer_stage.OverridePrim(mesh_path)
-        schemas = mesh_prim.GetAppliedSchemas()
-        if "MaterialBindingAPI" not in schemas:
-            material_binding_api = sublayer_stage.OverridePrim(
-                mesh_path, 
-                {"apiSchemas": ["MaterialBindingAPI"]}
-            )
+        
+        # Apply MaterialBindingAPI schema if not already applied
+        if not mesh_prim.HasAPI(UsdShade.MaterialBindingAPI):
+            UsdShade.MaterialBindingAPI.Apply(mesh_prim)
         
         # Create the Looks material
         looks_path = mesh_path.AppendPath("Looks")
