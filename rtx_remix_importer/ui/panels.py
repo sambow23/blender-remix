@@ -81,6 +81,13 @@ def register_properties():
         default=True,
     )
     
+    # Add property to control texture reuse optimization
+    bpy.types.Scene.remix_reuse_existing_textures = bpy.props.BoolProperty(
+        name="Reuse Existing Textures",
+        description="Automatically reuse existing textures for materials with the same base name (ignoring hash suffixes). Disable to force reprocessing of all textures",
+        default=True,
+    )
+    
     # --- New Capture Properties ---
     bpy.types.Scene.remix_capture_folder_path = bpy.props.StringProperty(
         name="Capture Folder",
@@ -123,6 +130,8 @@ def unregister_properties():
         del bpy.types.Scene.remix_export_scale
     if hasattr(bpy.types.Scene, "remix_auto_apply_transforms"):
         del bpy.types.Scene.remix_auto_apply_transforms
+    if hasattr(bpy.types.Scene, "remix_reuse_existing_textures"):
+        del bpy.types.Scene.remix_reuse_existing_textures
     # if hasattr(bpy.types.Scene, "_remix_loaded_sublayers"): # Clean up temp storage
     #     del bpy.types.Scene._remix_loaded_sublayers
     if hasattr(context.scene, "_remix_sublayers_ordered"): # Clean up temp storage
@@ -1169,6 +1178,9 @@ class PT_RemixProjectPanel(bpy.types.Panel):
             # Add Auto Apply Transforms option
             row_transform = box_export_settings.row()
             row_transform.prop(scene, "remix_auto_apply_transforms")
+            # Add Texture Reuse option
+            row_texture_reuse = box_export_settings.row()
+            row_texture_reuse.prop(scene, "remix_reuse_existing_textures")
             # Add Anchor selection to the Export settings
             row_anchor = box_export_settings.row()
             row_anchor.prop(scene, "remix_anchor_object_target")

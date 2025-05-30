@@ -361,18 +361,22 @@ def export_material(blender_material, sublayer_stage, project_root, sublayer_pat
                 print(f"    Using existing texture: {relative_texture_path}")
                 return bl_image, relative_texture_path
             
-            # Check for existing texture based on base material name (ignoring hash suffixes)
-            base_material_name = extract_base_material_name(blender_material.name)
-            existing_texture_path = find_existing_texture_for_base_material(
-                base_material_name, texture_type, textures_dir, texture_processor
-            )
-            
-            if existing_texture_path:
-                # Found existing texture for base material - reuse it
-                relative_texture_path = get_relative_path(sublayer_path, existing_texture_path)
-                print(f"    Reusing existing texture from base material '{base_material_name}': {relative_texture_path}")
-                print(f"    Skipping processing for '{bl_image.name}' (already processed for base material)")
-                return bl_image, relative_texture_path
+            # Check for existing texture based on base material name (only if reuse is enabled)
+            from bpy import context as bpy_context
+            if bpy_context.scene.remix_reuse_existing_textures:
+                base_material_name = extract_base_material_name(blender_material.name)
+                existing_texture_path = find_existing_texture_for_base_material(
+                    base_material_name, texture_type, textures_dir, texture_processor
+                )
+                
+                if existing_texture_path:
+                    # Found existing texture for base material - reuse it
+                    relative_texture_path = get_relative_path(sublayer_path, existing_texture_path)
+                    print(f"    Reusing existing texture from base material '{base_material_name}': {relative_texture_path}")
+                    print(f"    Skipping processing for '{bl_image.name}' (already processed for base material)")
+                    return bl_image, relative_texture_path
+            else:
+                print(f"    Texture reuse disabled - will process '{bl_image.name}' even if similar textures exist")
             
             # No existing texture found - add to processing queue
             texture_tasks.append((bl_image, absolute_dds_path, texture_type, dds_format))
