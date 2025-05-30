@@ -11,7 +11,7 @@ This can be used as a replacement to the official NVIDIA toolkit as it's able to
 ## Installation
 
 1. Download or clone this repository, extract to a folder
-2. Place `texconv.exe` in `rtx_remix_importer/texconv/` (might need to make the `texconv` folder)
+2. Place [`texconv.exe`](https://github.com/microsoft/DirectXTex/releases/latest/download/texconv.exe) in `rtx_remix_importer/texconv/` (might need to make the `texconv` folder)
 2. Install the addon in Blender:
    - Go to `Edit > Preferences > Add-ons`
    - Click `Install...` and select the `rtx_remix_importer` folder
