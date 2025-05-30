@@ -1,4 +1,5 @@
 # Remix Toolkit for Blender
+![image](https://github.com/user-attachments/assets/c20812f9-6efb-446a-9c86-e797bb90682e)
 
 A Blender addon for importing and exporting RTX Remix USD files.
 This can be used as a replacement to the official NVIDIA toolkit as it's able to import RTX Remix captures and export assets back in a NVIDIA Omniverse USD compatible format.
