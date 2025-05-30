@@ -6,11 +6,11 @@ This can be used as a replacement to the official NVIDIA toolkit as it's able to
 ## Requirements
 - A system running Windows (or use Wine on Linux)
 - [Blender 4.0.2](https://download.blender.org/release/Blender4.0/blender-4.0.2-windows-x64.zip) (not verified to work on newer versions)
-- [texconv from DirectXTex](https://github.com/microsoft/DirectXTex/releases/latest/download/texconv.exe)
+- [texconv from DirectXTex](https://github.com/microsoft/DirectXTex/releases/latest/download/texconv.exe) (only if using the git method)
 
 ## Installation
 ### Release
-1. Download the latest [release](https://github.com/microsoft/DirectXTex/releases/latest/download/rtx_remix_importer.zip)
+1. Download the latest [release](https://github.com/sambow23/blender-remix/releases/latest/download/rtx_remix_importer.zip)
 2. Install the addon in Blender:
    - Go to `Edit > Preferences > Add-ons`
    - Click `Install...` and select the `rtx_remix_importer.zip`
