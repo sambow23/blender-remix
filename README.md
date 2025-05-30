@@ -6,12 +6,19 @@ This can be used as a replacement to the official NVIDIA toolkit as it's able to
 ## Requirements
 - A system running Windows (or use Wine on Linux)
 - [Blender 4.0.2](https://download.blender.org/release/Blender4.0/blender-4.0.2-windows-x64.zip) (not verified to work on newer versions)
-- [texconv from DirectXTex](https://github.com/microsoft/DirectXTex/releases/latest/download/texconv.exe)
+- [texconv from DirectXTex](https://github.com/microsoft/DirectXTex/releases/latest/download/texconv.exe) (only if using the git method)
 
 ## Installation
+### Release
+1. Download the latest [release](https://github.com/sambow23/blender-remix/releases/latest/download/rtx_remix_importer.zip)
+2. Install the addon in Blender:
+   - Go to `Edit > Preferences > Add-ons`
+   - Click `Install...` and select the `rtx_remix_importer.zip`
+   - Enable the `Remix Toolkit for Blender` addon
 
-1. Download or clone this repository, extract to a folder
-2. Place `texconv.exe` in `rtx_remix_importer/texconv/` (might need to make the `texconv` folder)
+### Git Repo
+1. Clone this repository
+2. Place [`texconv.exe`](https://github.com/sambow23/blender-remix/releases/latest/download/texconv.exe) in `rtx_remix_importer/texconv/` (make the `texconv` folder)
 2. Install the addon in Blender:
    - Go to `Edit > Preferences > Add-ons`
    - Click `Install...` and select the `rtx_remix_importer` folder
@@ -37,7 +44,8 @@ This can be used as a replacement to the official NVIDIA toolkit as it's able to
 ## Known Issues
 - Non-anchor mesh replacements are considered experimental and will have issues
 - Albedo textures with an Alpha channel may not import/export correctly
-- Some .dds textures will not import correctly (appears to be a Blender bug?)
+- Some or all .dds textures are purple
+   - Happens with invalid .dds texture formats, use `Captures > Fix Broken Textures` to fix it
 - Texture export is _**SLOW**_
    - Currently using a single-threaded, non-queued texture export process with texconv, this may improve in the future)
 - Missing other material definitions like Aperture Translucent (will be added soon)
@@ -46,3 +54,5 @@ This can be used as a replacement to the official NVIDIA toolkit as it's able to
 
 ## Credits
 - Uncle Burrito on the RTX Remix Showcase Discord for the Aperture Opaque node group
+
+If you like what I do, buy me a [coffee](https://ko-fi.com/cattarappa)
