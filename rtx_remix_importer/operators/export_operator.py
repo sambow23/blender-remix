@@ -1,74 +1,39 @@
 import bpy
 import os
-from bpy_extras.io_utils import ExportHelper
-from bpy.props import StringProperty, BoolProperty
-from bpy.types import Operator
-import math
-import sys
-import traceback
-import subprocess
-import tempfile
-import time
-import hashlib
 import shutil
+import tempfile
+import subprocess
+import bmesh
+import mathutils
+from bpy_extras.io_utils import ExportHelper
+from bpy.props import StringProperty, BoolProperty, EnumProperty
+from bpy.types import Operator
 
-# Try importing USD libraries
 try:
-    from pxr import Usd, UsdGeom, UsdShade, UsdLux, Sdf, Vt, Gf
+    from pxr import Usd, UsdGeom, UsdShade, Sdf, Vt, Gf
     USD_AVAILABLE = True
 except ImportError:
     USD_AVAILABLE = False
-
-# --- Find texconv.exe --- 
-TEXCONV_PATH = None
-addon_dir = os.path.dirname(os.path.dirname(__file__)) # Get the rtx_remix_importer directory
-potential_texconv_path = os.path.join(addon_dir, "texconv", "texconv.exe")
-if os.path.exists(potential_texconv_path):
-    TEXCONV_PATH = potential_texconv_path
-    print(f"Found texconv.exe at: {TEXCONV_PATH}")
-else:
-    print(f"Warning: texconv.exe not found at {potential_texconv_path}. DDS export will fail.")
 
 # --- Helper Functions ---
 
 def get_relative_path(from_path, to_path):
     """Calculates the relative path from one file to another."""
-    try:
-        from_dir = os.path.dirname(from_path)
-        # Ensure both paths are absolute before calculating relative path
-        abs_from_path = os.path.abspath(from_dir)
-        abs_to_path = os.path.abspath(to_path)
-        rel_path = os.path.relpath(abs_to_path, start=abs_from_path)
-        
-        # Ensure relative paths always start with './' for paths that don't go up a directory
-        rel_path = rel_path.replace('\\', '/') # Use forward slashes for USD
-        if not rel_path.startswith("../") and not rel_path.startswith("./") and rel_path != ".":
-            rel_path = "./" + rel_path
-            
-        return rel_path
-    except Exception as e:
-        print(f"Error calculating relative path from '{from_path}' to '{to_path}': {e}")
-        return to_path # Fallback
+    # Use the unified implementation from core_utils
+    from .. import core_utils
+    return core_utils.get_relative_path(from_path, to_path)
 
 def generate_uuid_name(name, prefix="ref_"):
     """Generates a UUID-style name based on the input name for RTX Remix compatibility."""
-    import uuid
-    # Generate a UUID hash based on the object name for stability
-    uuid_seed = uuid.uuid5(uuid.NAMESPACE_DNS, name)
-    return f"{prefix}{uuid_seed.hex[:32]}"
+    # Use the unified implementation from core_utils
+    from .. import core_utils
+    return core_utils.generate_uuid_name(name, prefix)
 
 def sanitize_prim_name(name):
     """Replaces invalid characters for USD prim names."""
-    # Basic sanitization: replace spaces and invalid chars with underscores
-    # More robust handling might be needed depending on expected Blender names
-    invalid_chars = " .!@#$%^&*()-+=[]{};:'\"<>,/?`~"
-    sanitized = name
-    for char in invalid_chars:
-        sanitized = sanitized.replace(char, '_')
-    # Ensure it starts with a letter or underscore
-    if not sanitized or not (sanitized[0].isalpha() or sanitized[0] == '_'):
-        sanitized = '_' + sanitized
-    return sanitized
+    # Use the unified implementation from core_utils
+    from .. import core_utils
+    return core_utils.sanitize_prim_name(name)
 
 def ensure_mdl_files(project_root):
     """Copies MDL shader files from the addon to the project directory."""
@@ -264,8 +229,11 @@ def export_material(blender_material, sublayer_stage, project_root, sublayer_pat
 
     # Helper to get connected image texture path AND EXPORT IT
     def export_and_get_texture_path(socket_name, dds_format='BC7_UNORM_SRGB'):
-        # Check if texconv was found
-        if not TEXCONV_PATH:
+        # Use unified TextureProcessor
+        from .. import core_utils
+        texture_processor = core_utils.get_texture_processor()
+        
+        if not texture_processor.is_available():
             print(f"  Skipping DDS export for {socket_name}: texconv.exe not found.")
             return None
         
@@ -333,155 +301,48 @@ def export_material(blender_material, sublayer_stage, project_root, sublayer_pat
             except OSError as e:
                  print(f"  ERROR: Could not create textures directory: {textures_dir} - {e}")
                  return None
-                 
-            # Add the appropriate suffix based on texture type
-            type_suffix = ""
-            if socket_name.lower() == 'base color':
-                type_suffix = ".a.rtex"  # Albedo
-            elif socket_name.lower() == 'normal':
-                type_suffix = ".n.rtex"  # Normal
-            elif socket_name.lower() == 'roughness':
-                type_suffix = ".r.rtex"  # Roughness
-            elif socket_name.lower() == 'metallic':
-                type_suffix = ".m.rtex"  # Metallic
-            elif socket_name.lower() in ['emissive color', 'emission']:
-                type_suffix = ".e.rtex"  # Emissive
+            
+            # Get texture type for suffix and format
+            texture_type = socket_name.lower()
+            if texture_type in ['emissive color', 'emission']:
+                texture_type = 'emission'
+            elif texture_type == 'base color':
+                texture_type = 'base color'
+            
+            # Get appropriate suffix and use recommended format if not specified
+            type_suffix = texture_processor.get_texture_suffix(texture_type)
+            if dds_format == 'BC7_UNORM_SRGB':  # Default format, use recommendation
+                dds_format = texture_processor.get_recommended_format(texture_type)
             
             base_name, _ = os.path.splitext(bl_image.name)
-            # Use the type-specific suffix before the .dds extension
             dds_file_name = f"{base_name}{type_suffix}.dds"
             absolute_dds_path = os.path.normpath(os.path.join(textures_dir, dds_file_name))
             
-            # --- Use texconv.exe --- 
-            temp_input_path = None
+            # Use unified TextureProcessor for conversion
+            def progress_callback(msg):
+                print(f"    {msg}")
+            
             try:
-                # Save Blender image to a temporary PNG file (texconv prefers this)
-                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
-                    temp_input_path = temp_file.name
-                    
-                # Important: Save render AFTER getting the temp file name
-                # Use scene settings for color management consistency
-                scene = bpy.context.scene
-                render_settings = scene.render
-                orig_filepath = render_settings.filepath
-                orig_image_settings_format = render_settings.image_settings.file_format
-                orig_color_management_display = scene.display_settings.display_device
-                orig_color_management_view = scene.view_settings.view_transform
-                orig_color_management_look = scene.view_settings.look
-                orig_color_management_exposure = scene.view_settings.exposure
-                orig_color_management_gamma = scene.view_settings.gamma
-
-                try:
-                    # Set scene settings for temp render
-                    render_settings.image_settings.file_format = 'PNG'
-                    render_settings.image_settings.color_mode = 'RGBA' # Ensure alpha
-                    render_settings.image_settings.color_depth = '8' # Standard for png
-                    # Inherit scene color management for save_render
-                    render_settings.filepath = temp_input_path
-                    
-                    # Determine if sRGB conversion is needed based on format
-                    is_srgb = "SRGB" in dds_format.upper()
-                    # If Blender image is not sRGB but target is, or vice versa, Blender's save_render 
-                    # should handle the conversion based on scene display/view settings.
-                    # We rely on Blender's color management here when saving the temp file.
-                    
-                    bl_image.save_render(filepath=temp_input_path, scene=scene)
-                    print(f"    Saved temporary input: {temp_input_path}")
-                finally:
-                    # Restore original render settings
-                    render_settings.filepath = orig_filepath
-                    render_settings.image_settings.file_format = orig_image_settings_format
-                    scene.display_settings.display_device = orig_color_management_display
-                    scene.view_settings.view_transform = orig_color_management_view
-                    scene.view_settings.look = orig_color_management_look
-                    scene.view_settings.exposure = orig_color_management_exposure
-                    scene.view_settings.gamma = orig_color_management_gamma
-
-
-                # Map DDS format string to texconv format string
-                texconv_format_map = {
-                    'BC1_UNORM': 'BC1_UNORM',
-                    'BC1_UNORM_SRGB': 'BC1_UNORM_SRGB',
-                    'BC3_UNORM': 'BC3_UNORM',
-                    'BC3_UNORM_SRGB': 'BC3_UNORM_SRGB',
-                    'BC4_UNORM': 'BC4_UNORM',
-                    'BC4_SNORM': 'BC4_SNORM',
-                    'BC5_UNORM': 'BC5_UNORM',
-                    'BC5_SNORM': 'BC5_SNORM',
-                    'BC7_UNORM': 'BC7_UNORM',
-                    'BC7_UNORM_SRGB': 'BC7_UNORM_SRGB',
-                    # These dds formats may be incorrect, I have not validated them at all.
-                }
-                texconv_format = texconv_format_map.get(dds_format, 'BC7_UNORM_SRGB')
-
-                # Build texconv command
-                cmd = [
-                    TEXCONV_PATH,
-                    temp_input_path,
-                    "-o", textures_dir, # Output directory
-                    "-ft", "dds", # File type
-                    "-f", texconv_format, # DXGI Format
-                    "-m", "0", # Generate all mipmaps
-                    "-y", # Overwrite existing
-                    "-nologo",
-                ]
-                # Add srgb flag if format requires it (texconv handles this with format name)
-                # if "SRGB" in texconv_format:
-                #     cmd.append("-srgb") # texconv uses format name instead
-
-                print(f"    Running texconv: {' '.join(cmd)}")
-                result = subprocess.run(cmd, capture_output=True, text=True, check=False, shell=False)
-
-                if result.returncode != 0:
-                    print(f"    ERROR: texconv failed for '{bl_image.name}'")
-                    print(f"      Return Code: {result.returncode}")
-                    print(f"      Stdout: {result.stdout}")
-                    print(f"      Stderr: {result.stderr}")
-                    # Try to remove potentially corrupted output DDS if it exists
-                    if os.path.exists(absolute_dds_path):
-                        try: os.remove(absolute_dds_path) 
-                        except: pass 
-                    return None # Export failed
-                else:
-                    # Check if the specific output file was created (texconv outputs to dir)
-                    temp_output_base = os.path.splitext(os.path.basename(temp_input_path))[0]
-                    temp_dds_filename = f"{temp_output_base}.dds"
-                    temp_dds_path = os.path.join(textures_dir, temp_dds_filename)
-                    
-                    if not os.path.exists(temp_dds_path):
-                        print(f"    ERROR: texconv ran but temporary output file not found: {temp_dds_path}")
-                        print(f"      Stdout: {result.stdout}") # Show stdout for clues
-                        return None
-                    
-                    # Rename the temporary DDS to the final name
-                    try:
-                        # Use os.replace for atomic rename/overwrite
-                        os.replace(temp_dds_path, absolute_dds_path)
-                        print(f"    Renamed temp DDS '{temp_dds_filename}' to '{dds_file_name}'")
-                    except OSError as rename_error:
-                        print(f"    ERROR: Could not rename temp DDS '{temp_dds_path}' to '{absolute_dds_path}': {rename_error}")
-                        # Clean up the temp DDS if rename failed
-                        try: os.remove(temp_dds_path) 
-                        except: pass
-                        return None # Rename failed
-
-                    print(f"    texconv DDS Export successful for '{bl_image.name}'")
+                success = texture_processor.convert_png_to_dds_sync(
+                    bl_image, 
+                    absolute_dds_path, 
+                    texture_type=texture_type,
+                    dds_format=dds_format,
+                    progress_callback=progress_callback
+                )
+                
+                if success:
+                    print(f"    DDS Export successful for '{bl_image.name}'")
                     # Calculate relative path from sublayer to the exported texture
                     relative_texture_path = get_relative_path(sublayer_path, absolute_dds_path)
                     return relative_texture_path
-                 
+                else:
+                    print(f"    ERROR: DDS export failed for '{bl_image.name}'")
+                    return None
+                    
             except Exception as e:
-                print(f"  ERROR running texconv for '{bl_image.name}' to DDS ({absolute_dds_path}): {e}")
-                traceback.print_exc()
-                return None # Export failed
-            finally:
-                # Clean up temporary input file
-                if temp_input_path and os.path.exists(temp_input_path):
-                    try:
-                        os.remove(temp_input_path)
-                        print(f"    Removed temporary input file: {temp_input_path}")
-                    except Exception as e_clean:
-                        print(f"    Warning: Could not remove temporary file {temp_input_path}: {e_clean}")
+                print(f"  ERROR during DDS export for '{bl_image.name}': {e}")
+                return None
 
         return None # No valid image node found
 

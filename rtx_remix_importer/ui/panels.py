@@ -1635,17 +1635,17 @@ class FixBrokenTextures(bpy.types.Operator):
             self.report({'ERROR'}, f"Textures directory not found: {textures_dir}")
             return {'CANCELLED'}
         
-        # Find texconv.exe (use texconv instead of texdiag for conversion)
-        addon_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        texconv_path = os.path.join(addon_dir, "rtx_remix_importer", "texconv", "texconv.exe")
+        # Use unified TextureProcessor
+        from .. import core_utils
+        texture_processor = core_utils.get_texture_processor()
         
-        if not os.path.exists(texconv_path):
-            self.report({'ERROR'}, f"texconv.exe not found at: {texconv_path}")
+        if not texture_processor.is_available():
+            self.report({'ERROR'}, "texconv.exe not found. Cannot convert DDS textures.")
             return {'CANCELLED'}
         
         print(f"Starting texture conversion process...")
         print(f"Textures directory: {textures_dir}")
-        print(f"Using texconv.exe: {texconv_path}")
+        print(f"Using texconv.exe: {texture_processor.texconv_path}")
         
         try:
             # Step 1: Scan for DDS files
@@ -1665,57 +1665,40 @@ class FixBrokenTextures(bpy.types.Operator):
             converted_dir = os.path.join(textures_dir, "converted")
             os.makedirs(converted_dir, exist_ok=True)
             
-            # Step 3: Convert DDS files to PNG using texconv
-            converted_files = {}  # Map original DDS path to converted PNG path
-            failed_conversions = []
+            # Step 3: Convert DDS files to PNG using unified TextureProcessor
+            def progress_callback(current, total, message):
+                print(f"Converting {current+1}/{total}: {message}")
             
-            for i, dds_file in enumerate(dds_files):
-                try:
-                    # Get relative path from textures_dir to maintain folder structure
-                    rel_path = os.path.relpath(dds_file, textures_dir)
-                    png_name = os.path.splitext(os.path.basename(rel_path))[0] + ".png"
-                    png_path = os.path.join(converted_dir, png_name)
-                    
-                    # Run texconv to convert DDS to PNG
-                    cmd = [texconv_path, "-ft", "png", "-o", converted_dir, "-y", dds_file]
-                    
-                    print(f"Converting {i+1}/{len(dds_files)}: {os.path.basename(dds_file)}")
-                    
-                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-                    
-                    # texconv creates the PNG with the same base name as the DDS
-                    expected_png = os.path.join(converted_dir, png_name)
-                    
-                    if result.returncode == 0 and os.path.exists(expected_png):
-                        converted_files[dds_file] = expected_png
-                        print(f"  Successfully converted to: {png_name}")
-                    else:
-                        failed_conversions.append(dds_file)
-                        print(f"  Failed to convert: {os.path.basename(dds_file)}")
-                        if result.stderr:
-                            print(f"    Error: {result.stderr}")
-                
-                except subprocess.TimeoutExpired:
-                    failed_conversions.append(dds_file)
-                    print(f"  Timeout converting: {os.path.basename(dds_file)}")
-                except Exception as e:
-                    failed_conversions.append(dds_file)
-                    print(f"  Error converting {os.path.basename(dds_file)}: {e}")
+            converted_files = texture_processor.batch_convert_dds_to_png(
+                dds_files, 
+                converted_dir, 
+                progress_callback=progress_callback
+            )
             
             successful_conversions = len(converted_files)
-            print(f"Conversion complete: {successful_conversions} successful, {len(failed_conversions)} failed")
+            failed_conversions = len(dds_files) - successful_conversions
+            
+            print(f"Conversion complete: {successful_conversions} successful, {failed_conversions} failed")
             
             if successful_conversions == 0:
                 self.report({'ERROR'}, "No textures were successfully converted")
                 return {'CANCELLED'}
             
             # Step 4: Update materials to use converted textures
-            updated_materials = self._update_materials_with_converted_textures(converted_files, textures_dir, converted_dir)
+            # Create mapping from original DDS to converted PNG
+            converted_files_map = {}
+            for dds_file in dds_files:
+                base_name = os.path.splitext(os.path.basename(dds_file))[0]
+                png_path = os.path.join(converted_dir, f"{base_name}.png")
+                if os.path.exists(png_path):
+                    converted_files_map[dds_file] = png_path
+            
+            updated_materials = self._update_materials_with_converted_textures(converted_files_map, textures_dir, converted_dir)
             
             # Final report
             message = f"Converted {successful_conversions} textures and updated {updated_materials} materials"
-            if failed_conversions:
-                message += f" ({len(failed_conversions)} conversions failed)"
+            if failed_conversions > 0:
+                message += f" ({failed_conversions} conversions failed)"
             
             self.report({'INFO'}, message)
             print(f"Texture fix complete: {message}")

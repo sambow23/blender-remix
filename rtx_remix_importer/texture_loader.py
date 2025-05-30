@@ -152,44 +152,24 @@ def _convert_dds_to_png(
             temp_png_path = temp_file.name
         
         try:
-            # Convert DDS to PNG using texconv
-            cmd = [
-                texture_processor.texconv_path,
-                dds_path,
-                "-o", os.path.dirname(temp_png_path),
-                "-ft", "png",
-                "-y",  # Overwrite existing
-                "-nologo",
-            ]
-            
-            result = subprocess.run(
-                cmd, 
-                capture_output=True, 
-                text=True, 
-                check=False, 
-                shell=False,
-                timeout=30
+            # Use unified TextureProcessor for conversion
+            success = texture_processor.convert_dds_to_png_sync(
+                dds_path, 
+                temp_png_path,
+                progress_callback=lambda msg: print(f"  {msg}")
             )
             
-            if result.returncode == 0:
-                # texconv creates file with original name, rename it
-                original_name = os.path.splitext(os.path.basename(dds_path))[0]
-                texconv_output = os.path.join(os.path.dirname(temp_png_path), f"{original_name}.png")
-                
-                if os.path.exists(texconv_output):
-                    os.replace(texconv_output, temp_png_path)
-                
-                if os.path.exists(temp_png_path):
-                    # Load the converted PNG
-                    image = _load_standard_texture(temp_png_path, is_normal, is_non_color)
-                    if image:
-                        # Rename to match original DDS
-                        base_name = os.path.splitext(os.path.basename(dds_path))[0]
-                        image.name = _generate_unique_image_name(f"{base_name}_converted")
-                        print(f"Successfully converted DDS to PNG: {os.path.basename(dds_path)}")
-                        return image
+            if success and os.path.exists(temp_png_path):
+                # Load the converted PNG
+                image = _load_standard_texture(temp_png_path, is_normal, is_non_color)
+                if image:
+                    # Rename to match original DDS
+                    base_name = os.path.splitext(os.path.basename(dds_path))[0]
+                    image.name = _generate_unique_image_name(f"{base_name}_converted")
+                    print(f"Successfully converted DDS to PNG: {os.path.basename(dds_path)}")
+                    return image
             
-            print(f"texconv conversion failed for {os.path.basename(dds_path)}: {result.stderr}")
+            print(f"texconv conversion failed for {os.path.basename(dds_path)}")
             
         finally:
             # Cleanup temporary file
