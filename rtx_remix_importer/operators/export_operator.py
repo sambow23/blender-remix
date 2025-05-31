@@ -410,19 +410,25 @@ def export_material(blender_material, sublayer_stage, project_root, sublayer_pat
     enable_emission = False
     emissive_image, emissive_rel_path = None, None
     
-    # Check emission settings
+    # Check emission settings - handle both standard Principled BSDF and Aperture Opaque node groups
     emissive_socket_name = 'Emissive Color' if 'Emissive Color' in principled_node.inputs else 'Emission'
     emissive_socket = principled_node.inputs.get(emissive_socket_name)
     
-    if emissive_socket:
-        if emissive_socket.is_linked:
+    # For Aperture Opaque node groups, check the "Enable Emission" boolean input first
+    if principled_node.type == 'GROUP':
+        enable_emission_socket = principled_node.inputs.get('Enable Emission')
+        if enable_emission_socket and enable_emission_socket.default_value:
             enable_emission = True
+            print(f"    Found Aperture Opaque 'Enable Emission' = {enable_emission_socket.default_value}")
+    
+    # If emission is enabled (either by Enable Emission checkbox or other means), check for textures/colors
+    if enable_emission or (emissive_socket and (emissive_socket.is_linked or 
+                          (len(emissive_socket.default_value) >= 3 and any(c > 0.001 for c in emissive_socket.default_value[:3])))):
+        if not enable_emission:  # Set to True if not already set by Enable Emission checkbox
+            enable_emission = True
+            
+        if emissive_socket and emissive_socket.is_linked:
             emissive_image, emissive_rel_path = find_texture_for_socket(emissive_socket_name, 'BC7_UNORM_SRGB')
-        else:
-            # Check if emissive color is not black
-            emissive_color = emissive_socket.default_value
-            if len(emissive_color) >= 3 and any(c > 0.001 for c in emissive_color[:3]):
-                enable_emission = True
 
     # Check for opacity/alpha
     opacity_image, opacity_rel_path = None, None
@@ -536,15 +542,25 @@ def export_material(blender_material, sublayer_stage, project_root, sublayer_pat
 
     # Emission handling
     if enable_emission:
+        shader_prim.CreateAttribute("inputs:enable_emission", Sdf.ValueTypeNames.Bool).Set(True)
+        print(f"    Set enable_emission: True")
+        
         # Set emissive intensity
         emissive_intensity = 1.0
         
-        # Try to get emission strength from the material
-        if principled_node.type != 'GROUP':
+        # Try to get emission strength/intensity from the material
+        if principled_node.type == 'GROUP':
+            # Aperture Opaque node groups have "Emissive Intensity" input
+            emissive_intensity_socket = principled_node.inputs.get('Emissive Intensity')
+            if emissive_intensity_socket:
+                emissive_intensity = emissive_intensity_socket.default_value
+                print(f"    Found Aperture Opaque 'Emissive Intensity' = {emissive_intensity}")
+        else:
             # Standard Principled BSDF has Emission Strength
             emission_strength_socket = principled_node.inputs.get('Emission Strength')
             if emission_strength_socket:
                 emissive_intensity = emission_strength_socket.default_value
+                print(f"    Found Principled BSDF 'Emission Strength' = {emissive_intensity}")
         
         # Export emissive mask texture or color
         if emissive_rel_path:
