@@ -411,8 +411,37 @@ def export_material(blender_material, sublayer_stage, project_root, sublayer_pat
     emissive_image, emissive_rel_path = None, None
     
     # Check emission settings - handle both standard Principled BSDF and Aperture Opaque node groups
-    emissive_socket_name = 'Emissive Color' if 'Emissive Color' in principled_node.inputs else 'Emission'
-    emissive_socket = principled_node.inputs.get(emissive_socket_name)
+    # For Principled BSDF, the emission color socket is actually called 'Color' (under Emission section)
+    emissive_socket_name = None
+    if principled_node.type == 'GROUP':
+        # For Aperture Opaque and similar groups
+        if 'Emissive Color' in [inp.name for inp in principled_node.inputs]:
+            emissive_socket_name = 'Emissive Color'
+    else:
+        # For standard Principled BSDF, check for emission-related sockets
+        socket_names = [inp.name for inp in principled_node.inputs]
+        if 'Emission Color' in socket_names:
+            emissive_socket_name = 'Emission Color'
+        elif 'Emission' in socket_names:
+            emissive_socket_name = 'Emission'
+        else:
+            # In newer Blender versions, the emission color socket might be just 'Color'
+            # We need to find the Color socket that's part of the emission section
+            for inp in principled_node.inputs:
+                if inp.name == 'Color' and hasattr(inp, 'identifier'):
+                    # Check if this is the emission color socket by looking at nearby sockets
+                    socket_index = list(principled_node.inputs).index(inp)
+                    # Look for Emission Strength socket nearby
+                    for i in range(max(0, socket_index-2), min(len(principled_node.inputs), socket_index+3)):
+                        if principled_node.inputs[i].name == 'Emission Strength':
+                            emissive_socket_name = 'Color'
+                            print(f"    Found emission Color socket near Emission Strength")
+                            break
+                    if emissive_socket_name:
+                        break
+    
+    print(f"    DEBUG: Selected emissive socket name: {emissive_socket_name}")
+    emissive_socket = principled_node.inputs.get(emissive_socket_name) if emissive_socket_name else None
     
     # For Aperture Opaque node groups, check the "Enable Emission" boolean input first
     if principled_node.type == 'GROUP':
@@ -420,16 +449,27 @@ def export_material(blender_material, sublayer_stage, project_root, sublayer_pat
         if enable_emission_socket and enable_emission_socket.default_value:
             enable_emission = True
             print(f"    Found Aperture Opaque 'Enable Emission' = {enable_emission_socket.default_value}")
-    
-    # If emission is enabled (either by Enable Emission checkbox or other means), check for textures/colors
-    if enable_emission or (emissive_socket and (emissive_socket.is_linked or 
-                          (len(emissive_socket.default_value) >= 3 and any(c > 0.001 for c in emissive_socket.default_value[:3])))):
-        if not enable_emission:  # Set to True if not already set by Enable Emission checkbox
+    else:
+        # For standard Principled BSDF, check Emission Strength to determine if emission is enabled
+        emission_strength_socket = principled_node.inputs.get('Emission Strength')
+        if emission_strength_socket and emission_strength_socket.default_value > 0.001:
             enable_emission = True
-            
-        if emissive_socket and emissive_socket.is_linked:
-            emissive_image, emissive_rel_path = find_texture_for_socket(emissive_socket_name, 'BC7_UNORM_SRGB')
-
+            print(f"    Found Principled BSDF 'Emission Strength' = {emission_strength_socket.default_value} (> 0.001, enabling emission)")
+    
+    # Check for emissive textures regardless of emission enable state
+    if emissive_socket and emissive_socket.is_linked:
+        emissive_image, emissive_rel_path = find_texture_for_socket(emissive_socket_name, 'BC7_UNORM_SRGB')
+        if emissive_rel_path:
+            enable_emission = True  # Enable emission if we found a linked emissive texture
+            print(f"    Found linked emissive texture, enabling emission")
+    
+    # If emission is enabled (either by Enable Emission checkbox, Emission Strength, or linked texture), check for colors
+    if enable_emission or (emissive_socket and 
+                          (len(emissive_socket.default_value) >= 3 and any(c > 0.001 for c in emissive_socket.default_value[:3]))):
+        if not enable_emission:  # Set to True if not already set by previous checks
+            enable_emission = True
+            print(f"    Enabling emission due to non-zero emissive color")
+    
     # Check for opacity/alpha
     opacity_image, opacity_rel_path = None, None
     opacity_socket = principled_node.inputs.get('Alpha')
