@@ -12,7 +12,7 @@ from bpy.props import StringProperty, BoolProperty, EnumProperty
 from bpy.types import Operator
 
 try:
-    from pxr import Usd, UsdGeom, UsdShade, Sdf, Vt, Gf
+    from pxr import Usd, UsdGeom, UsdShade, UsdLux, Sdf, Vt, Gf
     USD_AVAILABLE = True
 except ImportError:
     USD_AVAILABLE = False
