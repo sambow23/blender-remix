@@ -177,7 +177,9 @@ def export_material(blender_material, sublayer_stage, project_root, sublayer_pat
         mesh_prim = sublayer_stage.OverridePrim(mesh_path)
         schemas = mesh_prim.GetAppliedSchemas()
         if "MaterialBindingAPI" not in schemas:
-            sublayer_stage.OverridePrim(mesh_path, {"apiSchemas": ["MaterialBindingAPI"]})
+            # Apply MaterialBindingAPI schema using the proper USD API
+            UsdShade.MaterialBindingAPI.Apply(mesh_prim)
+            print(f"    Applied MaterialBindingAPI schema to {mesh_path}")
         
         # Create material and shader paths
         looks_path = mesh_path.AppendPath("Looks")
