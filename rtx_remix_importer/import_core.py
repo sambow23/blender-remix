@@ -198,24 +198,11 @@ def get_mesh_data(usd_mesh_prim, context):
                     faces.append((face_indices[0], face_indices[i], face_indices[i+1]))
             current_index += count
 
-        # Remove duplicate faces to prevent mesh validation errors
-        seen_faces = set()
-        unique_faces = []
-        for face in faces:
-            # Sorting makes the check independent of vertex order
-            sorted_face = tuple(sorted(face))
-            if sorted_face not in seen_faces:
-                unique_faces.append(face)
-                seen_faces.add(sorted_face)
-
-        if len(faces) != len(unique_faces):
-            print(f"  Warning: Removed {len(faces) - len(unique_faces)} duplicate faces from mesh {usd_mesh_prim.GetPath()}")
-
         # Get UVs and normals
-        uvs_data = extract_uv_data(mesh, time_code, indices, verts, unique_faces)
+        uvs_data = extract_uv_data(mesh, time_code, indices, verts, faces)
         normals_data = extract_normals_data(mesh, time_code, indices, verts, up_axis_is_y)
 
-        return verts, unique_faces, uvs_data, normals_data
+        return verts, faces, uvs_data, normals_data
 
     except Exception as e:
         print(f"ERROR extracting mesh data from {usd_mesh_prim.GetPath()}: {e}")
