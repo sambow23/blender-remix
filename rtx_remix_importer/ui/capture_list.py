@@ -36,8 +36,8 @@ class REMIX_UL_CaptureList(bpy.types.UIList):
             row.label(text=f"{display_name} ({capture.size_mb:.1f}MB)", icon=icon)
 
             # Import button
-            import_op = row.operator("remix.import_capture_file", text="", icon='IMPORT')
-            import_op.capture_file_path = capture.full_path
+            import_op = row.operator("remix.import_capture", text="", icon='IMPORT')
+            import_op.filepath = capture.full_path
 
     def filter_items(self, context, data, propname):
         captures = getattr(data, propname)

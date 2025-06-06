@@ -1,6 +1,7 @@
 import bpy
 import os
 import traceback
+from ...import_core import import_rtx_remix_usd_with_materials, USDImportError
 
 try:
     from pxr import Usd
@@ -93,73 +94,46 @@ class ScanCaptureFolder(bpy.types.Operator):
 
 
 class ImportCaptureFile(bpy.types.Operator):
-    """Import a specific capture USD file"""
-    bl_idname = "remix.import_capture_file"
-    bl_label = "Import Capture File"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    capture_file_path: bpy.props.StringProperty(
-        name="Capture File Path",
-        description="Full path to the capture USD file to import"
-    )
-
-    @classmethod
-    def poll(cls, context):
-        return USD_AVAILABLE
+    """Import a selected RTX Remix capture file"""
+    bl_idname = "remix.import_capture"
+    bl_label = "Import RTX Remix Capture"
+    
+    filepath: bpy.props.StringProperty(subtype="FILE_PATH")
 
     def execute(self, context):
-        if not USD_AVAILABLE:
-            self.report({'ERROR'}, "USD Python libraries (pxr) not available.")
+        if not self.filepath:
+            self.report({'ERROR'}, "Filepath not set.")
             return {'CANCELLED'}
 
-        if not self.capture_file_path:
-            self.report({'ERROR'}, "No capture file path provided.")
-            return {'CANCELLED'}
-
-        filepath = bpy.path.abspath(self.capture_file_path)
-        if not os.path.exists(filepath):
-            self.report({'ERROR'}, f"Capture file not found: {filepath}")
-            return {'CANCELLED'}
-
-        # Import the core functionality
         try:
-            from ... import import_core
-            
-            # Use the scene properties for import settings
-            scene = context.scene
-            import_materials = scene.remix_capture_import_materials
-            import_lights = scene.remix_capture_import_lights
-            scene_scale = scene.remix_capture_scene_scale
+            # Clear material cache before import if desired
+            # clear_material_cache()
 
-            print(f"Importing capture file: {filepath}")
-            print(f"  Settings: materials={import_materials}, lights={import_lights}, scale={scene_scale}")
-            
-            # Call the core import function
-            imported_objects, imported_lights, message = import_core.import_rtx_remix_usd_with_materials(
+            new_objects, new_lights, new_cameras, message = import_rtx_remix_usd_with_materials(
                 context,
-                filepath,
-                import_materials,
-                import_lights,
-                scene_scale
+                self.filepath,
+                import_materials=context.scene.remix_capture_import_materials,
+                import_lights=context.scene.remix_capture_import_lights,
+                scene_scale=context.scene.remix_capture_scene_scale
             )
 
-            if imported_objects is not None:
+            if new_objects is not None:
                 self.report({'INFO'}, f"Imported capture: {message}")
-                print(f"Capture import finished: {message}")
-                return {'FINISHED'}
+                # Store the name of the last imported camera if one exists
+                if new_cameras:
+                    context.scene.remix_last_imported_camera = list(new_cameras)[0].name
             else:
-                self.report({'ERROR'}, f"Capture import failed: {message}")
-                print(f"Capture import failed: {message}")
+                self.report({'ERROR'}, f"Failed to import capture: {message}")
                 return {'CANCELLED'}
-                
-        except ImportError as e:
-            self.report({'ERROR'}, f"Import core module not available: {e}")
+
+        except USDImportError as e:
+            self.report({'ERROR'}, str(e))
             return {'CANCELLED'}
         except Exception as e:
-            self.report({'ERROR'}, f"Error importing capture file: {e}")
-            import traceback
-            traceback.print_exc()
+            self.report({'ERROR'}, f"An unexpected error occurred: {e}")
             return {'CANCELLED'}
+
+        return {'FINISHED'}
 
 
 class ClearCaptureList(bpy.types.Operator):
@@ -286,19 +260,16 @@ class BatchImportCaptures(bpy.types.Operator):
         self.report({'INFO'}, f"Starting batch import of {total_captures} captures...")
         
         try:
-            from ... import import_core
-            
             for i, capture in enumerate(available_captures):
                 capture_name = capture.name
                 capture_path = capture.full_path
                 
-                # Update progress
                 progress = (i + 1) / total_captures * 100
                 print(f"Processing capture {i+1}/{total_captures} ({progress:.1f}%): {capture_name}")
                 
                 try:
                     # Import the capture
-                    imported_objects, imported_lights, message = import_core.import_rtx_remix_usd_with_materials(
+                    imported_objects, imported_lights, new_cameras, message = import_rtx_remix_usd_with_materials(
                         context,
                         capture_path,
                         scene.remix_capture_import_materials,
@@ -316,6 +287,10 @@ class BatchImportCaptures(bpy.types.Operator):
                         imported_count += 1
                         
                         print(f"  ✓ Imported {len(processed_objects)} new objects from {capture_name}")
+                        
+                        # Store the name of the last imported camera if one exists
+                        if new_cameras:
+                            context.scene.remix_last_imported_camera = list(new_cameras)[0].name
                         
                     else:
                         print(f"  ✗ Failed to import {capture_name}: {message}")
@@ -346,9 +321,6 @@ class BatchImportCaptures(bpy.types.Operator):
             
             return {'FINISHED'}
             
-        except ImportError as e:
-            self.report({'ERROR'}, f"Import core module not available: {e}")
-            return {'CANCELLED'}
         except Exception as e:
             self.report({'ERROR'}, f"Error during batch import: {e}")
             import traceback
@@ -613,7 +585,7 @@ class BatchImportSelectedCaptures(bpy.types.Operator):
             
             try:
                 # Import the capture
-                imported_objects, imported_lights, message = import_core.import_rtx_remix_usd_with_materials(
+                imported_objects, imported_lights, new_cameras, message = import_rtx_remix_usd_with_materials(
                     context,
                     capture_path,
                     import_materials,
@@ -633,6 +605,10 @@ class BatchImportSelectedCaptures(bpy.types.Operator):
                         total_new_objects += len(new_objects)
                         imported_count += 1
                         print(f"  Successfully imported {len(new_objects)} new objects from {capture_name}")
+                        
+                        # Store the name of the last imported camera if one exists
+                        if new_cameras:
+                            context.scene.remix_last_imported_camera = list(new_cameras)[0].name
                     else:
                         skipped_count += 1
                         print(f"  Skipped {capture_name} - all objects were duplicates")

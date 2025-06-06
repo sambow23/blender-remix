@@ -29,6 +29,9 @@ from .operators.utility_ops import (
     ClearMaterialCache,
     FixBrokenTextures,
 )
+from .operators.camera_ops import (
+    AlignViewToCamera,
+)
 from .project_panel import (
     PT_RemixProjectPanel,
 )
@@ -65,6 +68,7 @@ operator_classes = [
     BatchImportSelectedCaptures,
     ClearMaterialCache,
     FixBrokenTextures,
+    AlignViewToCamera,
 ]
 
 # List of all panel classes for registration
