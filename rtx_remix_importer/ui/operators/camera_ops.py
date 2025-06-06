@@ -26,23 +26,31 @@ class AlignViewToCamera(bpy.types.Operator):
             return {'CANCELLED'}
         
         # Get the viewport region
-        region = context.region
         rv3d = context.space_data.region_3d
 
         if rv3d is None:
             self.report({'WARNING'}, "Active space is not a 3D View.")
             return {'CANCELLED'}
 
-        # Get the camera's world matrix
-        cam_matrix = target_camera.matrix_world.copy()
+        # Ensure the viewport is in perspective mode to match the camera
+        rv3d.view_perspective = 'PERSP'
 
-        # Calculate the new view matrix for the viewport
-        # The viewport camera looks down its -Z axis.
-        # We want the viewport to be "at" the camera's location, looking in the same direction.
-        rv3d.view_matrix = cam_matrix.inverted()
-        
-        # Center the view on the camera's location
-        rv3d.view_location = cam_matrix.to_translation()
+        # Decompose the camera's matrix to get location and rotation
+        cam_matrix = target_camera.matrix_world.copy()
+        cam_location = cam_matrix.to_translation()
+        cam_rotation_quat = cam_matrix.to_quaternion()
+
+        # Set the viewport's rotation to match the camera
+        rv3d.view_rotation = cam_rotation_quat
+
+        # Set a small distance for "maximum zoom" to increase fly/walk precision.
+        # This is the key to making the view feel "zoomed in".
+        rv3d.view_distance = 1.0
+
+        # The pivot point (view_location) must be calculated to place the viewport
+        # at the camera's location, given the new view_distance.
+        forward_vector = cam_rotation_quat @ mathutils.Vector((0.0, 0.0, -1.0))
+        rv3d.view_location = cam_location + forward_vector * rv3d.view_distance
 
         self.report({'INFO'}, f"Aligned viewport to camera: {target_camera.name}")
 
