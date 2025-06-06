@@ -419,6 +419,7 @@ def create_camera_from_prim(cam_prim, context):
 
     # Add custom property to identify this as a remix camera
     bl_cam_obj.data["is_remix_camera"] = True
+    bl_cam_obj.data["remix_capture_source"] = os.path.basename(context.usd_file_path)
 
     return bl_cam_obj
 

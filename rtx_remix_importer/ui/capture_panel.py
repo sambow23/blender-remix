@@ -74,8 +74,16 @@ class PT_RemixCapturePanel(bpy.types.Panel):
             
             captures_box.separator()
 
-            # Align View button
-            captures_box.operator("remix.align_view_to_camera", icon='CAMERA_DATA')
+            # Align View button is now a menu
+            # Check if there are any imported cameras to decide if the menu should be active
+            imported_cameras_exist = any(
+                obj.type == 'CAMERA' and 'is_remix_camera' in obj.data 
+                for obj in context.scene.objects
+            )
+            
+            row = captures_box.row()
+            row.enabled = imported_cameras_exist
+            row.menu("UI_MT_remix_camera_menu", text="Align View to Imported Camera", icon='CAMERA_DATA')
             
             captures_box.separator()
 
@@ -110,6 +118,7 @@ class PT_RemixCapturePanel(bpy.types.Panel):
                     preview_box = captures_box.box()
                     preview_box.label(text="Preview: (Generating...)")
 
+
 def register_previews():
     # Create a new preview collection
     pcoll = previews.new()
@@ -140,63 +149,3 @@ def on_depsgraph_update(scene):
         if 0 <= index < len(captures):
             capture = captures[index]
             load_thumbnail(capture.full_path)
-
-class PT_RemixBackgroundProcessing(bpy.types.Panel):
-    """Panel for background texture processing status and controls"""
-    bl_label = "Background Processing"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = "RTX Remix"
-    bl_parent_id = "SCENE_PT_remix_project"
-    bl_options = {'DEFAULT_CLOSED'}
-
-    def draw(self, context):
-        layout = self.layout
-        
-        # Get background processor status
-        try:
-            from .... import core_utils
-            background_processor = core_utils.get_background_processor()
-            
-            active_count = len(background_processor.active_jobs)
-            completed_count = len(background_processor.completed_jobs)
-            
-            # Status info
-            col = layout.column(align=True)
-            col.label(text=f"Active Jobs: {active_count}")
-            col.label(text=f"Completed Jobs: {completed_count}")
-            
-            # Show active job details
-            if active_count > 0:
-                box = layout.box()
-                box.label(text="Active Jobs:", icon='TIME')
-                
-                for job_id, job_info in background_processor.active_jobs.items():
-                    status = background_processor.get_job_status(job_id)
-                    if status:
-                        progress_pct = (status['progress'] / status['total']) * 100 if status['total'] > 0 else 0
-                        
-                        row = box.row()
-                        row.label(text=f"{job_id[-8:]}...")  # Show last 8 chars of job ID
-                        row.label(text=f"{progress_pct:.0f}%")
-                        
-                        # Cancel button for individual job
-                        op = row.operator("remix.cancel_background_job", text="", icon='X')
-                        op.job_id = job_id
-            
-            # Control buttons
-            row = layout.row(align=True)
-            row.operator("remix.background_job_status", text="Refresh Status")
-            
-            if active_count > 0:
-                row.operator("remix.cancel_all_background_jobs", text="Cancel All")
-            
-            if completed_count > 0:
-                layout.operator("remix.cleanup_completed_jobs", text="Cleanup Completed")
-            
-            # Test button (for development)
-            layout.separator()
-            layout.operator("remix.background_processing_test", text="Test Background Processing")
-            
-        except Exception as e:
-            layout.label(text=f"Error: {e}", icon='ERROR') 

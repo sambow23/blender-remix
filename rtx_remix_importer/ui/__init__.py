@@ -32,6 +32,7 @@ from .operators.utility_ops import (
 from .operators.camera_ops import (
     AlignViewToCamera,
 )
+from . import camera_menu
 from .project_panel import (
     PT_RemixProjectPanel,
 )
@@ -40,7 +41,6 @@ from .asset_panel import (
 )
 from .capture_panel import (
     PT_RemixCapturePanel,
-    PT_RemixBackgroundProcessing,
     register_previews,
     unregister_previews,
     on_depsgraph_update,
@@ -76,7 +76,11 @@ panel_classes = [
     PT_RemixProjectPanel,
     PT_RemixAssetProcessingPanel,
     PT_RemixCapturePanel,
-    PT_RemixBackgroundProcessing,
+]
+
+# List of all Menu classes
+menu_classes = [
+    camera_menu.UI_MT_RemixCameraMenu,
 ]
 
 # List of all UIList classes
@@ -100,6 +104,8 @@ def register():
         bpy.utils.register_class(cls)
     for cls in panel_classes:
         bpy.utils.register_class(cls)
+    for cls in menu_classes:
+        bpy.utils.register_class(cls)
     register_previews()
     bpy.app.handlers.depsgraph_update_post.append(on_depsgraph_update)
 
@@ -107,6 +113,8 @@ def unregister():
     """Unregister all UI components."""
     bpy.app.handlers.depsgraph_update_post.remove(on_depsgraph_update)
     unregister_previews()
+    for cls in reversed(menu_classes):
+        bpy.utils.unregister_class(cls)
     for cls in reversed(panel_classes):
         bpy.utils.unregister_class(cls)
     for cls in reversed(ui_list_classes):

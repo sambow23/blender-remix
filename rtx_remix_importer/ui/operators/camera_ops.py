@@ -7,22 +7,25 @@ class AlignViewToCamera(bpy.types.Operator):
     bl_label = "Align View to Imported Camera"
     bl_options = {'REGISTER', 'UNDO'}
 
+    camera_name: bpy.props.StringProperty(
+        name="Camera Name",
+        description="The name of the camera object to align the view to"
+    )
+
     @classmethod
     def poll(cls, context):
         # Check if there is a 3D viewport
         return context.space_data and context.space_data.type == 'VIEW_3D'
 
     def execute(self, context):
-        last_camera_name = context.scene.get("remix_last_imported_camera", "")
-
-        if not last_camera_name:
-            self.report({'WARNING'}, "No recently imported camera found. Import a capture with a camera first.")
+        if not self.camera_name:
+            self.report({'WARNING'}, "No camera name specified.")
             return {'CANCELLED'}
 
-        target_camera = context.scene.objects.get(last_camera_name)
+        target_camera = context.scene.objects.get(self.camera_name)
 
         if not target_camera or target_camera.type != 'CAMERA':
-            self.report({'WARNING'}, f"Could not find the last imported camera: '{last_camera_name}'")
+            self.report({'WARNING'}, f"Could not find the specified camera: '{self.camera_name}'")
             return {'CANCELLED'}
         
         # Get the viewport region
