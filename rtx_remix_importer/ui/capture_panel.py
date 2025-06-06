@@ -1,6 +1,11 @@
 import bpy
+from bpy.utils import previews
+from .. import core_utils
 from .operators.capture_ops import *
 from .operators.utility_ops import *
+
+# Global preview collection
+preview_collections = {}
 
 class PT_RemixCapturePanel(bpy.types.Panel):
     """Panel for managing RTX Remix capture imports"""
@@ -79,6 +84,57 @@ class PT_RemixCapturePanel(bpy.types.Panel):
                 "remix_captures_index",  # propertyname for the active index
                 rows=10                  # Number of rows to display
             )
+
+            # --- Thumbnail Preview ---
+            active_capture_index = scene.remix_captures_index
+            if 0 <= active_capture_index < len(available_captures):
+                active_capture = available_captures[active_capture_index]
+                
+                # Get the preview image path
+                pcoll = preview_collections["main"]
+                
+                if active_capture.full_path in pcoll:
+                    preview_image = pcoll[active_capture.full_path]
+                    
+                    # Draw the preview
+                    preview_box = captures_box.box()
+                    preview_box.label(text="Preview:")
+                    preview_box.template_icon(icon_value=preview_image.icon_id, scale=5)
+                else:
+                    # If preview not loaded yet, show a placeholder
+                    preview_box = captures_box.box()
+                    preview_box.label(text="Preview: (Generating...)")
+
+def register_previews():
+    # Create a new preview collection
+    pcoll = previews.new()
+    pcoll.my_previews_dir = ""
+    preview_collections["main"] = pcoll
+
+def unregister_previews():
+    # Unload all preview collections
+    for pcoll in preview_collections.values():
+        previews.remove(pcoll)
+    preview_collections.clear()
+
+def load_thumbnail(capture_path):
+    """Load a single thumbnail into the preview collection."""
+    pcoll = preview_collections["main"]
+
+    if capture_path and capture_path not in pcoll:
+        thumb_path = core_utils.get_thumbnail_preview(capture_path)
+        if thumb_path:
+            pcoll.load(capture_path, thumb_path, 'IMAGE')
+
+@bpy.app.handlers.persistent
+def on_depsgraph_update(scene):
+    """Check for active capture and load its thumbnail if needed."""
+    if bpy.context.scene and hasattr(bpy.context.scene, "remix_captures"):
+        captures = bpy.context.scene.remix_captures
+        index = bpy.context.scene.remix_captures_index
+        if 0 <= index < len(captures):
+            capture = captures[index]
+            load_thumbnail(capture.full_path)
 
 class PT_RemixBackgroundProcessing(bpy.types.Panel):
     """Panel for background texture processing status and controls"""

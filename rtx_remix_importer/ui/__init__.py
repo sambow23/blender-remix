@@ -38,6 +38,9 @@ from .asset_panel import (
 from .capture_panel import (
     PT_RemixCapturePanel,
     PT_RemixBackgroundProcessing,
+    register_previews,
+    unregister_previews,
+    on_depsgraph_update,
 )
 from .capture_list import (
     RemixCaptureListItem,
@@ -93,9 +96,13 @@ def register():
         bpy.utils.register_class(cls)
     for cls in panel_classes:
         bpy.utils.register_class(cls)
+    register_previews()
+    bpy.app.handlers.depsgraph_update_post.append(on_depsgraph_update)
 
 def unregister():
     """Unregister all UI components."""
+    bpy.app.handlers.depsgraph_update_post.remove(on_depsgraph_update)
+    unregister_previews()
     for cls in reversed(panel_classes):
         bpy.utils.unregister_class(cls)
     for cls in reversed(ui_list_classes):

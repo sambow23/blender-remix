@@ -1372,3 +1372,54 @@ def get_background_processor():
     if _background_processor is None:
         _background_processor = BackgroundTextureProcessor()
     return _background_processor 
+
+def get_thumbnail_preview(capture_full_path):
+    """
+    Finds the associated .dds thumbnail for a capture, converts it to a .png
+    if needed, and returns the path to the displayable .png file.
+    Caches the converted .png in a temporary directory.
+    """
+    if not capture_full_path:
+        return None
+
+    capture_dir = os.path.dirname(capture_full_path)
+    capture_filename = os.path.basename(capture_full_path)
+    base_name, _ = os.path.splitext(capture_filename)
+    
+    # Construct paths
+    thumb_dir = os.path.join(capture_dir, "thumbs")
+    dds_path = os.path.join(thumb_dir, f"{base_name}.dds")
+
+    # Check if the source .dds thumbnail exists
+    if not os.path.exists(dds_path):
+        return None # No source thumbnail
+
+    # Create a temporary cache directory within the addon
+    cache_dir = os.path.join(constants.ADDON_DIR, "temp_thumbnails")
+    os.makedirs(cache_dir, exist_ok=True)
+    
+    png_path = os.path.join(cache_dir, f"{base_name}.png")
+
+    # If the cached .png already exists, use it
+    if os.path.exists(png_path):
+        return png_path
+
+    # If not cached, convert the .dds to .png
+    texture_processor = get_texture_processor()
+    if not texture_processor.is_available():
+        return None # Cannot convert without texconv
+
+    try:
+        # Correctly call the synchronous conversion method
+        if texture_processor.convert_dds_to_png_sync(dds_path, png_path):
+            return png_path
+    except Exception as e:
+        print(f"Error converting thumbnail {dds_path}: {e}")
+        return None
+    
+    return None
+
+def cleanup_addon_resources():
+    """Cleans up temporary files created by the addon."""
+    # Remove temporary thumbnail directory
+    # ... existing code ... 
