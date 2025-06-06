@@ -1947,4 +1947,22 @@ def export_material_replacement(operator, context, obj, sublayer_stage, project_
         traceback.print_exc()
         return False
 
-# --- Core Export Logic Helper ---
+    print(f"--- Finished Exporting Material Replacement: {obj.name} ---")
+    return True
+
+# --- Registration ---
+
+classes = (
+    ExportRemixAsset,
+    ExportRemixModFile,
+    InvalidateRemixAssets,
+    TestApplyAllTransforms,
+)
+
+def register():
+    for cls in classes:
+        bpy.utils.register_class(cls)
+
+def unregister():
+    for cls in reversed(classes):
+        bpy.utils.unregister_class(cls)
