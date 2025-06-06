@@ -198,11 +198,24 @@ def get_mesh_data(usd_mesh_prim, context):
                     faces.append((face_indices[0], face_indices[i], face_indices[i+1]))
             current_index += count
 
+        # Remove duplicate faces to prevent mesh validation errors
+        seen_faces = set()
+        unique_faces = []
+        for face in faces:
+            # Sorting makes the check independent of vertex order
+            sorted_face = tuple(sorted(face))
+            if sorted_face not in seen_faces:
+                unique_faces.append(face)
+                seen_faces.add(sorted_face)
+
+        if len(faces) != len(unique_faces):
+            print(f"  Warning: Removed {len(faces) - len(unique_faces)} duplicate faces from mesh {usd_mesh_prim.GetPath()}")
+
         # Get UVs and normals
-        uvs_data = extract_uv_data(mesh, time_code, indices, verts, faces)
+        uvs_data = extract_uv_data(mesh, time_code, indices, verts, unique_faces)
         normals_data = extract_normals_data(mesh, time_code, indices, verts, up_axis_is_y)
 
-        return verts, faces, uvs_data, normals_data
+        return verts, unique_faces, uvs_data, normals_data
 
     except Exception as e:
         print(f"ERROR extracting mesh data from {usd_mesh_prim.GetPath()}: {e}")
@@ -416,6 +429,9 @@ def create_camera_from_prim(cam_prim, context):
     bl_cam_obj.rotation_mode = 'QUATERNION'
     bl_cam_obj.rotation_quaternion = rot
     bl_cam_obj.scale = scale
+
+    # Add custom property to identify this as a remix camera
+    bl_cam_obj.data["is_remix_camera"] = True
 
     return bl_cam_obj
 
@@ -815,7 +831,7 @@ def import_rtx_remix_usd_with_materials(context, usd_file_path, import_materials
     This is the main entry point that orchestrates the import process.
     """
     if not USD_AVAILABLE:
-        return None, None, "USD Python libraries (pxr) not found. Please install them in Blender's Python environment."
+        return None, None, None, "USD Python libraries (pxr) not found. Please install them in Blender's Python environment."
 
     print(f"Starting RTX Remix USD Import: {usd_file_path}")
     print(f" Options: Import Materials={import_materials}, Import Lights={import_lights}")
@@ -845,12 +861,12 @@ def import_rtx_remix_usd_with_materials(context, usd_file_path, import_materials
         success_message = create_success_message(usd_file_path, usd_context)
         print(success_message)
         
-        return usd_context.created_objects, usd_context.created_lights_set, success_message
+        return usd_context.created_objects, usd_context.created_lights_set, usd_context.created_cameras_set, success_message
         
     except USDImportError as e:
-        return None, None, str(e)
+        return None, None, None, str(e)
     except Exception as e:
         error_msg = f"Unexpected error during import: {e}"
         print(error_msg)
         traceback.print_exc()
-        return None, None, error_msg 
+        return None, None, None, error_msg 
