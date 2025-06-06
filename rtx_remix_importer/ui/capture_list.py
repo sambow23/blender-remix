@@ -40,14 +40,31 @@ class REMIX_UL_CaptureList(bpy.types.UIList):
             import_op.capture_file_path = capture.full_path
 
     def filter_items(self, context, data, propname):
-        # This function is required, but we won't do any filtering for now.
-        # It returns two lists: a filtered list and an ordered list.
         captures = getattr(data, propname)
-        
-        # Default return values.
-        flt_flags = [self.bitflag_filter_item] * len(captures)
-        flt_neworder = list(range(len(captures)))
+        helper = bpy.types.UI_UL_list
 
+        # Filtering
+        filter_name = self.filter_name.lower()
+        if filter_name:
+            flt_flags = [self.bitflag_filter_item if filter_name in c.name.lower() else 0 for c in captures]
+        else:
+            flt_flags = [self.bitflag_filter_item] * len(captures)
+            
+        # Sorting
+        if self.use_filter_sort_alpha:
+            # Create a list of (name, index) tuples for sorting
+            s_items = [(c.name.lower(), i) for i, c in enumerate(captures)]
+            # Sort the list
+            s_items.sort(key=lambda x: x[0])
+            # Get the new order of indices
+            flt_neworder = [item[1] for item in s_items]
+        else:
+            flt_neworder = list(range(len(captures)))
+
+        # Reverse sort
+        if self.use_filter_sort_reverse:
+            flt_neworder.reverse()
+        
         return flt_flags, flt_neworder
 
 classes = (
