@@ -1,5 +1,6 @@
 import bpy
 from .operators.capture_ops import auto_scan_capture_folder
+from .capture_list import RemixCaptureListItem
 
 # --- Scene Properties ---
 
@@ -93,6 +94,10 @@ def register_properties():
         default=True,
     )
 
+    # --- UIList Properties ---
+    bpy.types.Scene.remix_captures = bpy.props.CollectionProperty(type=RemixCaptureListItem)
+    bpy.types.Scene.remix_captures_index = bpy.props.IntProperty(name="Capture List Index", default=0)
+
 def unregister_properties():
     del bpy.types.Scene.remix_mod_file_path
     # del bpy.types.Scene.remix_project_dir
@@ -130,3 +135,9 @@ def unregister_properties():
         del bpy.types.Scene["_remix_available_captures"]
     if hasattr(bpy.types.Scene, "_remix_batch_selected_captures"):
         del bpy.types.Scene["_remix_batch_selected_captures"] 
+    
+    # --- Clean up UIList Properties ---
+    if hasattr(bpy.types.Scene, "remix_captures"):
+        del bpy.types.Scene.remix_captures
+    if hasattr(bpy.types.Scene, "remix_captures_index"):
+        del bpy.types.Scene.remix_captures_index 

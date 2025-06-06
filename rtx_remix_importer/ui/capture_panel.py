@@ -45,73 +45,40 @@ class PT_RemixCapturePanel(bpy.types.Panel):
         captures_box = layout.box()
         captures_box.label(text="Available Captures", icon='FILE_3D')
         
-        # Get the scanned captures and selected captures
-        available_captures = scene.get("_remix_available_captures", [])
-        selected_captures = scene.get("_remix_batch_selected_captures", [])
-        if not isinstance(selected_captures, list):
-            selected_captures = []
+        # Get the scanned captures
+        available_captures = scene.remix_captures
         
         if not available_captures:
             if scene.remix_capture_folder_path:
-                captures_box.label(text="No captures found. Folder scanned automatically.", icon='INFO')
+                captures_box.label(text="No captures found. Folder may be empty.", icon='INFO')
             else:
                 captures_box.label(text="Select a capture folder first.", icon='ERROR')
         else:
             # Show count and controls
             header_row = captures_box.row(align=True)
             header_row.label(text=f"Found: {len(available_captures)} files")
+            
+            # Batch import button
+            selected_count = len([c for c in available_captures if c.is_selected])
+            if selected_count > 0:
+                op = header_row.operator(BatchImportSelectedCaptures.bl_idname, text=f"Import {selected_count} Selected")
+            else:
+                header_row.label(text="") # Placeholder to keep alignment
+
             header_row.operator(ClearCaptureList.bl_idname, icon='TRASH', text="Clear")
             
-            # Batch import controls
-            if len(selected_captures) > 0:
-                batch_row = captures_box.row()
-                batch_row.scale_y = 1.2  # Make it more prominent
-                batch_row.operator(BatchImportSelectedCaptures.bl_idname, icon='IMPORT', text=f"Batch Import {len(selected_captures)} Selected")
-            
             captures_box.separator()
-            
-            # List captures (limit to first 20 to avoid UI clutter)
-            col = captures_box.column()
-            max_display = 20
-            
-            for i, capture in enumerate(available_captures[:max_display]):
-                row = col.row(align=True)
-                
-                # File info
-                file_name = capture['name']
-                size_mb = capture['size_mb']
-                full_path = capture['full_path']
-                
-                # Truncate long filenames
-                display_name = file_name if len(file_name) <= 25 else file_name[:22] + "..."
-                
-                # Show file icon based on extension
-                if file_name.lower().endswith('.usd'):
-                    icon = 'FILE_3D'
-                elif file_name.lower().endswith('.usda'):
-                    icon = 'FILE_TEXT'
-                elif file_name.lower().endswith('.usdc'):
-                    icon = 'FILE_CACHE'
-                else:
-                    icon = 'FILE'
-                
-                # Checkbox for batch selection
-                checkbox_icon = 'CHECKBOX_HLT' if full_path in selected_captures else 'CHECKBOX_DEHLT'
-                toggle_op = row.operator(ToggleCaptureSelection.bl_idname, text="", icon=checkbox_icon)
-                toggle_op.capture_file_path = full_path
-                
-                # File name and size
-                row.label(text=f"{display_name} ({size_mb:.1f}MB)", icon=icon)
-                
-                # Import button
-                import_op = row.operator(ImportCaptureFile.bl_idname, text="", icon='IMPORT')
-                import_op.capture_file_path = full_path
-            
-            # Show "and X more..." if there are more files
-            if len(available_captures) > max_display:
-                remaining = len(available_captures) - max_display
-                col.label(text=f"... and {remaining} more files", icon='THREE_DOTS')
-                col.label(text="(Use 'Clear' and 'Scan' to refresh)", icon='INFO')
+
+            # Draw the UIList
+            captures_box.template_list(
+                "REMIX_UL_capture_list", # UIList class name
+                "",                      # propertyname of the list's data
+                scene,                   # data pointer for the list
+                "remix_captures",        # propertyname of the list's data
+                scene,                   # data pointer for the active index
+                "remix_captures_index",  # propertyname for the active index
+                rows=10                  # Number of rows to display
+            )
 
 class PT_RemixBackgroundProcessing(bpy.types.Panel):
     """Panel for background texture processing status and controls"""
@@ -119,7 +86,7 @@ class PT_RemixBackgroundProcessing(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = "RTX Remix"
-    bl_parent_id = "PT_RemixExport"
+    bl_parent_id = "SCENE_PT_remix_project"
     bl_options = {'DEFAULT_CLOSED'}
 
     def draw(self, context):

@@ -17,8 +17,8 @@ def auto_scan_capture_folder(self, context):
             bpy.ops.remix.scan_capture_folder()
         except:
             # If operator fails, just clear the captures list
-            if "_remix_available_captures" in context.scene:
-                del context.scene["_remix_available_captures"]
+            if hasattr(context.scene, "remix_captures"):
+                context.scene.remix_captures.clear()
 
 class ScanCaptureFolder(bpy.types.Operator):
     """Refresh the capture folder scan for available USD files"""
@@ -74,8 +74,13 @@ class ScanCaptureFolder(bpy.types.Operator):
             # Sort by modification time (newest first)
             usd_files.sort(key=lambda x: x['mod_time'], reverse=True)
             
-            # Store the list in the scene
-            context.scene["_remix_available_captures"] = usd_files
+            # Store the list in the scene's CollectionProperty
+            context.scene.remix_captures.clear()
+            for f in usd_files:
+                item = context.scene.remix_captures.add()
+                item.name = f['name']
+                item.full_path = f['full_path']
+                item.size_mb = f['size_mb']
             
             self.report({'INFO'}, f"Found {len(usd_files)} USD files in capture folder")
             print(f"Found USD files: {[f['name'] for f in usd_files[:5]]}{'...' if len(usd_files) > 5 else ''}")
@@ -164,10 +169,7 @@ class ClearCaptureList(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
-        if "_remix_available_captures" in context.scene:
-            del context.scene["_remix_available_captures"]
-        if "_remix_batch_selected_captures" in context.scene:
-            del context.scene["_remix_batch_selected_captures"]
+        context.scene.remix_captures.clear()
         self.report({'INFO'}, "Cleared capture file list")
         return {'FINISHED'}
 
@@ -183,20 +185,9 @@ class ToggleCaptureSelection(bpy.types.Operator):
     )
 
     def execute(self, context):
-        # Get or create the batch selection list
-        selected_captures = context.scene.get("_remix_batch_selected_captures", [])
-        if not isinstance(selected_captures, list):
-            selected_captures = []
-        
-        # Toggle selection
-        if self.capture_file_path in selected_captures:
-            selected_captures.remove(self.capture_file_path)
-        else:
-            selected_captures.append(self.capture_file_path)
-        
-        # Store back in scene
-        context.scene["_remix_batch_selected_captures"] = selected_captures
-        
+        # This operator is no longer needed as the selection is handled by the UIList's property.
+        # However, we can adapt it or simply remove it. For now, let's have it do nothing.
+        # The checkbox in the UIList directly modifies the `is_selected` property.
         return {'FINISHED'}
 
 class BatchImportCaptures(bpy.types.Operator):
@@ -240,8 +231,8 @@ class BatchImportCaptures(bpy.types.Operator):
     def draw(self, context):
         layout = self.layout
         
-        # Get available captures
-        available_captures = context.scene.get("_remix_available_captures", [])
+        # Get available captures from the CollectionProperty
+        available_captures = context.scene.remix_captures
         
         if not available_captures:
             layout.label(text="No captures scanned. Use 'Scan' first.", icon='ERROR')
@@ -264,7 +255,7 @@ class BatchImportCaptures(bpy.types.Operator):
         max_preview = 5
         for i, capture in enumerate(available_captures[:max_preview]):
             row = box.row()
-            row.label(text=f"• {capture['name']} ({capture['size_mb']:.1f}MB)", icon='FILE')
+            row.label(text=f"• {capture.name} ({capture.size_mb:.1f}MB)", icon='FILE')
         
         if len(available_captures) > max_preview:
             remaining = len(available_captures) - max_preview
@@ -275,7 +266,7 @@ class BatchImportCaptures(bpy.types.Operator):
             self.report({'ERROR'}, "USD Python libraries (pxr) not available.")
             return {'CANCELLED'}
 
-        available_captures = context.scene.get("_remix_available_captures", [])
+        available_captures = context.scene.remix_captures
         if not available_captures:
             self.report({'ERROR'}, "No captures available. Scan capture folder first.")
             return {'CANCELLED'}
@@ -298,8 +289,8 @@ class BatchImportCaptures(bpy.types.Operator):
             from ... import import_core
             
             for i, capture in enumerate(available_captures):
-                capture_name = capture['name']
-                capture_path = capture['full_path']
+                capture_name = capture.name
+                capture_path = capture.full_path
                 
                 # Update progress
                 progress = (i + 1) / total_captures * 100
@@ -533,7 +524,7 @@ class BatchImportSelectedCaptures(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        selected_captures = context.scene.get("_remix_batch_selected_captures", [])
+        selected_captures = [c for c in context.scene.remix_captures if c.is_selected]
         return USD_AVAILABLE and len(selected_captures) > 0
 
     def invoke(self, context, event):
@@ -544,17 +535,13 @@ class BatchImportSelectedCaptures(bpy.types.Operator):
         layout = self.layout
         
         # Get selected captures
-        selected_captures = context.scene.get("_remix_batch_selected_captures", [])
-        available_captures = context.scene.get("_remix_available_captures", [])
+        selected_captures = [c for c in context.scene.remix_captures if c.is_selected]
         
-        # Filter to only selected captures
-        selected_capture_data = [cap for cap in available_captures if cap['full_path'] in selected_captures]
-        
-        if not selected_capture_data:
+        if not selected_captures:
             layout.label(text="No captures selected for batch import.", icon='ERROR')
             return
         
-        layout.label(text=f"Selected {len(selected_capture_data)} captures to process:")
+        layout.label(text=f"Selected {len(selected_captures)} captures to process:")
         
         # Show settings
         box = layout.box()
@@ -569,28 +556,24 @@ class BatchImportSelectedCaptures(bpy.types.Operator):
         
         # Show first few captures
         max_preview = 5
-        for i, capture in enumerate(selected_capture_data[:max_preview]):
+        for i, capture in enumerate(selected_captures[:max_preview]):
             row = box.row()
-            row.label(text=f"• {capture['name']} ({capture['size_mb']:.1f}MB)", icon='FILE')
+            row.label(text=f"• {capture.name} ({capture.size_mb:.1f}MB)", icon='FILE')
         
-        if len(selected_capture_data) > max_preview:
-            remaining = len(selected_capture_data) - max_preview
+        if len(selected_captures) > max_preview:
+            remaining = len(selected_captures) - max_preview
             box.label(text=f"... and {remaining} more files", icon='THREE_DOTS')
 
     def execute(self, context):
         # Get selected captures
-        selected_captures = context.scene.get("_remix_batch_selected_captures", set())
-        available_captures = context.scene.get("_remix_available_captures", [])
+        captures_to_import = [c for c in context.scene.remix_captures if c.is_selected]
         
-        # Filter to only selected captures
-        selected_capture_data = [cap for cap in available_captures if cap['full_path'] in selected_captures]
-        
-        if not selected_capture_data:
+        if not captures_to_import:
             self.report({'ERROR'}, "No captures selected for batch import.")
             return {'CANCELLED'}
         
         # Use the same logic as the original batch import but only for selected captures
-        return self._execute_batch_import(context, selected_capture_data)
+        return self._execute_batch_import(context, captures_to_import)
     
     def _execute_batch_import(self, context, captures_to_import):
         """Execute the batch import for the given captures (reused from BatchImportCaptures)"""
@@ -622,8 +605,8 @@ class BatchImportSelectedCaptures(bpy.types.Operator):
         print(f"Starting batch import of {total_captures} selected captures...")
         
         for i, capture in enumerate(captures_to_import):
-            capture_name = capture['name']
-            capture_path = capture['full_path']
+            capture_name = capture.name
+            capture_path = capture.full_path
             
             print(f"Processing capture {i+1}/{total_captures}: {capture_name}")
             self.report({'INFO'}, f"Processing {i+1}/{total_captures}: {capture_name}")
@@ -669,8 +652,8 @@ class BatchImportSelectedCaptures(bpy.types.Operator):
         print(summary)
         
         # Clear selection after successful batch import
-        if "_remix_batch_selected_captures" in context.scene:
-            del context.scene["_remix_batch_selected_captures"]
+        for capture in context.scene.remix_captures:
+            capture.is_selected = False
         
         return {'FINISHED'}
     

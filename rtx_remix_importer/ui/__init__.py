@@ -39,6 +39,10 @@ from .capture_panel import (
     PT_RemixCapturePanel,
     PT_RemixBackgroundProcessing,
 )
+from .capture_list import (
+    RemixCaptureListItem,
+    REMIX_UL_CaptureList,
+)
 
 # List of all operator classes for registration
 operator_classes = [
@@ -68,10 +72,24 @@ panel_classes = [
     PT_RemixBackgroundProcessing,
 ]
 
+# List of all UIList classes
+ui_list_classes = [
+    REMIX_UL_CaptureList,
+]
+
+# List of all PropertyGroup classes
+property_group_classes = [
+    RemixCaptureListItem,
+]
+
 def register():
     """Register all UI components."""
+    for cls in property_group_classes:
+        bpy.utils.register_class(cls)
     register_properties()
     for cls in operator_classes:
+        bpy.utils.register_class(cls)
+    for cls in ui_list_classes:
         bpy.utils.register_class(cls)
     for cls in panel_classes:
         bpy.utils.register_class(cls)
@@ -80,6 +98,10 @@ def unregister():
     """Unregister all UI components."""
     for cls in reversed(panel_classes):
         bpy.utils.unregister_class(cls)
+    for cls in reversed(ui_list_classes):
+        bpy.utils.unregister_class(cls)
     for cls in reversed(operator_classes):
         bpy.utils.unregister_class(cls)
-    unregister_properties() 
+    unregister_properties()
+    for cls in reversed(property_group_classes):
+        bpy.utils.unregister_class(cls) 
