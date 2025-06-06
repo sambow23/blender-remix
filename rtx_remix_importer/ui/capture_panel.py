@@ -66,14 +66,15 @@ class PT_RemixCapturePanel(bpy.types.Panel):
             # Batch import button
             selected_count = len([c for c in available_captures if c.is_selected])
             if selected_count > 0:
-                op = header_row.operator(BatchImportSelectedCaptures.bl_idname, text=f"Import {selected_count} Selected")
+                op = header_row.operator("remix.batch_import_selected_captures", text=f"Import {selected_count} Selected")
             else:
-                op = header_row.operator(BatchImportCaptures.bl_idname, text=f"Import All")
+                op = header_row.operator("remix.batch_import_all_captures", text=f"Import All")
 
             header_row.operator(ClearCaptureList.bl_idname, icon='TRASH', text="Clear")
-
-            # Add the new Align View button here
+            
             captures_box.separator()
+
+            # Align View button
             captures_box.operator("remix.align_view_to_camera", icon='CAMERA_DATA')
             
             captures_box.separator()

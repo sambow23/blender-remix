@@ -22,7 +22,7 @@ from .operators.capture_ops import (
     ImportCaptureFile,
     ClearCaptureList,
     ToggleCaptureSelection,
-    BatchImportCaptures,
+    BatchImportAllCaptures,
     BatchImportSelectedCaptures,
 )
 from .operators.utility_ops import (
@@ -64,7 +64,7 @@ operator_classes = [
     ImportCaptureFile,
     ClearCaptureList,
     ToggleCaptureSelection,
-    BatchImportCaptures,
+    BatchImportAllCaptures,
     BatchImportSelectedCaptures,
     ClearMaterialCache,
     FixBrokenTextures,

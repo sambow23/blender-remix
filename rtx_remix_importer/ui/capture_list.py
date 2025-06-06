@@ -18,8 +18,8 @@ class REMIX_UL_CaptureList(bpy.types.UIList):
         if self.layout_type in {'DEFAULT', 'COMPACT'}:
             row = layout.row(align=True)
 
-            # Checkbox for batch selection
-            row.prop(capture, "is_selected", text="", emboss=False)
+            # Checkbox for batch selection, removing emboss=False to ensure visibility
+            row.prop(capture, "is_selected", text="")
 
             # File icon and name
             if capture.name.lower().endswith('.usd'):
