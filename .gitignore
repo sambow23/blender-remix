@@ -3,3 +3,7 @@ reference/
 rtx_remix_importer/__pycache__/
 .vscode/
 /blender_dds_addon/
+__pycache__/
+*.pyc
+*.pyo
+rtx_remix_importer/texconv/texconv.exe
