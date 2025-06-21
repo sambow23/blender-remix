@@ -79,17 +79,18 @@ def create_light_from_usd(light_prim, stage, scene_scale=1.0):
 
         # Calculate combined intensity (Blender uses 'energy')
         # USD Intensity * 2^Exposure = Power (Watts)
-        # Blender energy relationship is complex, depends on light type/units.
-        # A simple scaling factor might be needed, e.g., * 100, requires testing.
+        # Blender interprets energy values as milliwatts (mW), so we need to convert from watts
         light_power = intensity * math.pow(2, exposure)
-        blender_energy_scale = 1.0 # Reduced from 10.0 to make lights less intense overall
+        watts_to_milliwatts = 1000.0  # Convert watts to milliwatts for Blender
+        blender_energy_scale = 1.0 # Base scale
 
         # --- Determine Light Type and Create Data Block ---
         light_data = None
         bl_light_type = 'POINT' # Default
 
         # Apply scene_scale^2 to energy for non-directional lights to maintain perceived brightness
-        effective_light_power = light_power
+        # Also convert from watts to milliwatts for Blender
+        effective_light_power = light_power * watts_to_milliwatts
         if prim_type != "DistantLight": # Only scale energy for Point/Area/Spot lights
             effective_light_power *= (scene_scale * scene_scale)
 
@@ -158,7 +159,7 @@ def create_light_from_usd(light_prim, stage, scene_scale=1.0):
              light_data = bpy.data.lights.new(name=light_name, type=bl_light_type)
              # Intensity for sun is often treated differently (irradiance)
              # Sun light energy (irradiance) should not be scaled by scene_scale**2
-             # Apply blender_energy_scale consistently, but not scene_scale**2 for sun.
+             # Sun lights work correctly with watts, don't convert to milliwatts
              light_data.energy = light_power * blender_energy_scale 
              angle_rad = get_attr_value(light_prim, "angle", 0.53) # Angle in degrees in USD? Assume degrees
              light_data.angle = math.radians(angle_rad) # Blender uses radians
@@ -196,6 +197,26 @@ def create_light_from_usd(light_prim, stage, scene_scale=1.0):
         # Apply scale for Area lights (affects size if shape='SQUARE'/'RECTANGLE')
         # Scaling the object itself is usually not the way to size area lights in Blender
         # We already set size properties on light_data.
+
+        # Force light data update to ensure Blender recognizes the light properly
+        # This fixes the issue where lights don't emit until manually adjusted
+        if hasattr(light_data, 'update'):
+            light_data.update()
+        
+        # Force property update by temporarily changing energy value
+        # This triggers Blender's internal light recalculation
+        original_energy = light_data.energy
+        light_data.energy = original_energy + 0.001  # Tiny change
+        light_data.energy = original_energy  # Restore original value
+        
+        # Force a scene update to refresh lighting calculations
+        if hasattr(bpy.context, 'view_layer') and bpy.context.view_layer:
+            bpy.context.view_layer.update()
+        
+        # Tag the light object for update to ensure viewport refresh
+        light_obj.update_tag()
+        if hasattr(light_data, 'update_tag'):
+            light_data.update_tag()
 
         print(f"Created light: {light_name} ({bl_light_type})")
         return light_obj
@@ -254,4 +275,18 @@ def import_lights_from_usd(stage, collection, scene_scale=1.0):
                     bpy.data.objects.remove(light_obj)
 
     print(f"Imported {len(created_lights)} lights.")
+    
+    # Force a final scene update after all lights are imported
+    # This ensures all lights are properly recognized by Blender's lighting system
+    if created_lights:
+        try:
+            if hasattr(bpy.context, 'view_layer') and bpy.context.view_layer:
+                bpy.context.view_layer.update()
+            # Also force a scene update
+            if hasattr(bpy.context, 'scene') and bpy.context.scene:
+                bpy.context.scene.update_tag()
+            print("  Forced scene update to refresh lighting calculations.")
+        except Exception as e:
+            print(f"  Warning: Could not force scene update: {e}")
+    
     return created_lights 
