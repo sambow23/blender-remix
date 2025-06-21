@@ -48,7 +48,6 @@ This can be used as a replacement to the official NVIDIA toolkit as it's able to
 - Some or all .dds textures are purple
    - Happens with invalid .dds texture formats, use `Captures > Fix Broken Textures` to fix it
 - The `Aperture Opaque` node group is not hooked up completely, there are some missing features (animation, iridescence, flags, etc)
-- Missing other material definitions like `Aperture Translucent` (will be added soon)
 - Skinned mesh exporting is not supported yet
 - Loading changes from a project's mod.usda can result in undefined behavior. This is being worked on.
 
