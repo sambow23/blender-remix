@@ -3,6 +3,11 @@ import os
 import math
 import mathutils
 from ... import mod_apply_utils
+from ...core_utils import (
+    calc_normals_split_compatible, 
+    set_mesh_auto_smooth_compatible, 
+    set_custom_normals_compatible
+)
 
 try:
     from pxr import Usd, Sdf, UsdGeom, UsdShade, Vt, UsdLux, Gf 
@@ -414,7 +419,7 @@ class ApplyRemixModChanges(bpy.types.Operator):
                                     self.report({'DEBUG'}, f"No uvs_data tuple for new mesh <{prim_path}>")
                                 
                                 # --- Apply Normals to new mesh ---
-                                bl_mesh_data.use_auto_smooth = True # Required for custom normals
+                                set_mesh_auto_smooth_compatible(bl_mesh_data, True) # Required for custom normals
                                 if normals_data:
                                     norm_values, norm_indices_list, norm_interpolation = normals_data
                                     if norm_values and bl_mesh_data.loops: # Check bl_mesh_data.loops for safety
@@ -445,20 +450,20 @@ class ApplyRemixModChanges(bpy.types.Operator):
                                         
                                         if normals_processed_successfully:
                                             try:
-                                                bl_mesh_data.normals_split_custom_set(loop_normals)
+                                                set_custom_normals_compatible(bl_mesh_data, loop_normals)
                                             except Exception as e_norm: # Catch potential errors during set
                                                 self.report({'ERROR'}, f"Failed to set custom normals for <{prim_path}>: {e_norm}")
-                                                bl_mesh_data.calc_normals_split() # Fallback if error
+                                                calc_normals_split_compatible(bl_mesh_data) # Fallback if error
                                         else:
                                             self.report({'DEBUG'}, f"Normals not processed successfully for <{prim_path}>, calculating default.")
-                                            bl_mesh_data.calc_normals_split() # Fallback
+                                            calc_normals_split_compatible(bl_mesh_data) # Fallback
                                     else:
                                         if not norm_values: self.report({'DEBUG'}, f"No Normal values for new mesh <{prim_path}>")
                                         if not bl_mesh_data.loops: self.report({'DEBUG'}, f"Mesh <{prim_path}> has no loops for Normals.")
-                                        bl_mesh_data.calc_normals_split() # Fallback if loops or values missing
+                                        calc_normals_split_compatible(bl_mesh_data) # Fallback if loops or values missing
                                 else:
                                     self.report({'DEBUG'}, f"No normals_data tuple for new mesh <{prim_path}>, calculating default.")
-                                    bl_mesh_data.calc_normals_split() # Fallback if no USD normals
+                                    calc_normals_split_compatible(bl_mesh_data) # Fallback if no USD normals
 
                                 # Removed the general TODO comment as it is now addressed by the detailed logic above.
                                 bl_mesh_data.validate(verbose=False) # Keep verbose=False to avoid console spam for valid meshes

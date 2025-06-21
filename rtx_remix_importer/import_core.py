@@ -13,6 +13,11 @@ if USD_AVAILABLE:
     from .material_utils import create_material, get_or_create_instance_material
     from .light_utils import import_lights_from_usd
     from .texture_utils import find_texture_path
+    from .core_utils import (
+        calc_normals_split_compatible, 
+        set_mesh_auto_smooth_compatible, 
+        set_custom_normals_compatible
+    )
 
 
 class USDStageContext:
@@ -503,7 +508,7 @@ def create_blender_mesh_from_data(mesh_geom, child_prim, mesh_key_path_str):
     apply_normals_data(bl_mesh, normals_data, mesh_key_path_str)
 
     # Validate and finalize mesh
-    bl_mesh.validate(verbose=True)
+    bl_mesh.validate(verbose=False)
     if bl_mesh.polygons:
         bl_mesh.polygons.foreach_set('use_smooth', [True] * len(bl_mesh.polygons))
 
@@ -577,11 +582,11 @@ def apply_uniform_uvs(bl_mesh, uv_layer, uv_values, mesh_key_path_str):
 def apply_normals_data(bl_mesh, normals_data, mesh_key_path_str):
     """Apply normals data to Blender mesh."""
     if not normals_data:
-        bl_mesh.calc_normals_split()
+        calc_normals_split_compatible(bl_mesh)
         return
         
     norm_values, norm_indices, norm_interpolation = normals_data
-    bl_mesh.use_auto_smooth = True
+    set_mesh_auto_smooth_compatible(bl_mesh, True)
     
     if norm_interpolation == UsdGeom.Tokens.vertex:
         apply_vertex_normals(bl_mesh, norm_values, mesh_key_path_str)
@@ -589,16 +594,17 @@ def apply_normals_data(bl_mesh, normals_data, mesh_key_path_str):
         apply_face_varying_normals(bl_mesh, norm_values, norm_indices, mesh_key_path_str)
     else:
         print(f"    Warning: Unhandled Normal interpolation '{norm_interpolation}' for {mesh_key_path_str}. Using auto-calculated normals.")
-        bl_mesh.calc_normals_split()
+        calc_normals_split_compatible(bl_mesh)
 
 
 def apply_vertex_normals(bl_mesh, norm_values, mesh_key_path_str):
     """Apply vertex normals."""
     if len(norm_values) == len(bl_mesh.vertices):
-        bl_mesh.normals_split_custom_set_from_vertices([n for v in norm_values for n in v])
+        flat_normals = [n for v in norm_values for n in v]
+        set_custom_normals_compatible(bl_mesh, flat_normals, from_vertices=True)
     else:
         print(f"    Warning: Normal vertex data size mismatch for {mesh_key_path_str}. Using auto-calculated normals.")
-        bl_mesh.calc_normals_split()
+        calc_normals_split_compatible(bl_mesh)
 
 
 def apply_face_varying_normals(bl_mesh, norm_values, norm_indices, mesh_key_path_str):
@@ -611,16 +617,17 @@ def apply_face_varying_normals(bl_mesh, norm_values, norm_indices, mesh_key_path
                 norm_idx = norm_indices[i]
                 if 0 <= norm_idx < len(norm_values):
                     loop_normals[loop.index] = tuple(norm_values[norm_idx])
-            bl_mesh.normals_split_custom_set(loop_normals)
+            set_custom_normals_compatible(bl_mesh, loop_normals)
         else:
             print(f"    Warning: Normal faceVarying index size mismatch for {mesh_key_path_str}. Using auto-calculated normals.")
-            bl_mesh.calc_normals_split()
+            calc_normals_split_compatible(bl_mesh)
     elif len(norm_values) == len(bl_mesh.loops):
         # Non-indexed Face Varying
-        bl_mesh.normals_split_custom_set([tuple(n) for n in norm_values])
+        loop_normals = [tuple(n) for n in norm_values]
+        set_custom_normals_compatible(bl_mesh, loop_normals)
     else:
         print(f"    Warning: Normal faceVarying data size mismatch for {mesh_key_path_str}. Using auto-calculated normals.")
-        bl_mesh.calc_normals_split()
+        calc_normals_split_compatible(bl_mesh)
 
 
 def process_instances(context, collections, import_materials):

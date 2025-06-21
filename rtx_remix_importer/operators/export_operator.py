@@ -19,6 +19,7 @@ except ImportError:
 
 # Import constants for addon directory access
 from .. import constants
+from ..core_utils import calc_normals_split_compatible, to_mesh_clear_compatible
 
 # --- Helper Functions ---
 
@@ -1402,7 +1403,7 @@ class ExportRemixAsset(Operator):
 
             if not mesh_data.vertices or not mesh_data.polygons:
                 self.report({'WARNING'}, f"Skipping mesh {obj.name}: No vertices or polygons.")
-                eval_obj.to_mesh_clear() # Use original cleanup
+                to_mesh_clear_compatible(eval_obj)
                 # mesh_stage.GetRootLayer().Clear()
                 return False
 
@@ -1439,7 +1440,7 @@ class ExportRemixAsset(Operator):
                 print("  Mesh has no UV layers.")
 
             try:
-                mesh_data.calc_normals_split() # Use original normals
+                calc_normals_split_compatible(mesh_data)
                 normals = [l.normal[:] for l in mesh_data.loops]
                 if normals:
                     normals_attr = mesh_prim.CreateAttribute("normals", Sdf.ValueTypeNames.Normal3fArray)
@@ -1501,12 +1502,12 @@ class ExportRemixAsset(Operator):
                 
             except Exception as e:
                 self.report({'ERROR'}, f"Failed to save mesh stage {mesh_file_path}: {e}")
-                eval_obj.to_mesh_clear() # Use original cleanup
+                to_mesh_clear_compatible(eval_obj) # Use original cleanup
                 return False
 
             # --- Cleanup Blender Mesh ---
             # Use original cleanup
-            eval_obj.to_mesh_clear()
+            to_mesh_clear_compatible(eval_obj)
 
         # --- Export Material (in Sublayer) --- 
         # Store bl_mat for later

@@ -13,6 +13,7 @@ if USD_AVAILABLE:
     from .usd_utils import get_shader_from_material, get_input_value
     from .texture_utils import load_texture, resolve_material_asset_path
     from . import constants
+    from .core_utils import set_material_blend_method_compatible
 
 # Cache for Blender materials to avoid redundant creation
 # Key: unique identifier (e.g., base_path + metadata_hash)
@@ -1141,18 +1142,14 @@ def apply_metadata_overrides(metadata, bl_material, shader_node):
     alpha_test_enabled = metadata.get('alphaTestEnabled', 0) == 1
 
     if alpha_blend_enabled:
-        bl_material.blend_method = 'BLEND' # Or 'HASHED'?
-        bl_material.shadow_method = 'HASHED' # Or 'CLIP' or 'NONE'?
+        set_material_blend_method_compatible(bl_material, 'BLEND', 'HASHED')
         print(f"      Set blend_method=BLEND, shadow_method=HASHED")
     elif alpha_test_enabled:
-        bl_material.blend_method = 'CLIP'
-        bl_material.shadow_method = 'CLIP'
         alpha_threshold = metadata.get('alphaTestReferenceValue', 0) / 255.0
-        bl_material.alpha_threshold = alpha_threshold
+        set_material_blend_method_compatible(bl_material, 'CLIP', 'CLIP', alpha_threshold)
         print(f"      Set blend_method=CLIP, shadow_method=CLIP, threshold={alpha_threshold:.3f}")
     else:
-        bl_material.blend_method = 'OPAQUE'
-        bl_material.shadow_method = 'OPAQUE'
+        set_material_blend_method_compatible(bl_material, 'OPAQUE', 'OPAQUE')
         # print(f"      Set blend_method=OPAQUE, shadow_method=OPAQUE")
 
     # --- Texture Operations (Example - Needs Refinement) --- #

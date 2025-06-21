@@ -1,13 +1,15 @@
 import bpy
+import bmesh
 import os
-import math
-import hashlib
-import json
-import tempfile
-import subprocess
+import sys
+import time
 import asyncio
 import threading
-import time
+import subprocess
+import hashlib
+import uuid
+import json
+import tempfile
 from typing import Optional, Tuple, Dict, Any, List, Callable
 from concurrent.futures import ThreadPoolExecutor
 
@@ -1423,3 +1425,90 @@ def cleanup_addon_resources():
     """Cleans up temporary files created by the addon."""
     # Remove temporary thumbnail directory
     # ... existing code ... 
+
+# Blender version compatibility functions
+def get_blender_version():
+    """Get Blender version as tuple (major, minor, patch)"""
+    return bpy.app.version
+
+def is_blender_4_1_or_newer():
+    """Check if running Blender 4.1 or newer"""
+    version = get_blender_version()
+    return version >= (4, 1, 0)
+
+def set_mesh_auto_smooth_compatible(mesh, enable=True):
+    """Set auto smooth on mesh in a version-compatible way"""
+    if hasattr(mesh, 'use_auto_smooth'):
+        # Blender 4.0 and earlier
+        mesh.use_auto_smooth = enable
+    else:
+        # Blender 4.1+ - auto smooth is always enabled, no need to set
+        pass
+
+def calc_normals_split_compatible(mesh):
+    """Calculate split normals in a version-compatible way"""
+    if hasattr(mesh, 'calc_normals_split'):
+        # Blender 4.0 and earlier
+        mesh.calc_normals_split()
+    else:
+        # Blender 4.1+ - use calc_loop_triangles and normals_split_custom_set with empty list
+        # This ensures the mesh has proper loop data for custom normals
+        mesh.calc_loop_triangles()
+
+def set_custom_normals_compatible(mesh, normals_data=None, from_vertices=False):
+    """Set custom normals in a version-compatible way"""
+    try:
+        if hasattr(mesh, 'normals_split_custom_set_from_vertices') and hasattr(mesh, 'normals_split_custom_set'):
+            # Blender 4.0 and earlier
+            if from_vertices and normals_data:
+                mesh.normals_split_custom_set_from_vertices(normals_data)
+            elif normals_data:
+                mesh.normals_split_custom_set(normals_data)
+            else:
+                mesh.calc_normals_split()
+        else:
+            # Blender 4.1+ - In newer versions, custom normals are handled differently
+            # For now, we'll just ensure the mesh has proper geometry and let Blender calculate normals
+            if normals_data:
+                # Ensure we have the required loop data
+                mesh.calc_loop_triangles()
+                # Note: In Blender 4.1+, custom normals are typically handled through
+                # mesh modifiers or different APIs. For basic compatibility, we'll
+                # let Blender calculate the normals automatically.
+                print("  Note: Custom normals in Blender 4.1+ - using auto-calculated normals")
+            else:
+                # Just ensure proper loop data
+                mesh.calc_loop_triangles()
+    except Exception as e:
+        print(f"  Warning: Error setting custom normals: {e}")
+        # Fallback to calculated normals
+        calc_normals_split_compatible(mesh)
+
+def to_mesh_clear_compatible(obj):
+    """Clear temporary mesh data in a version-compatible way"""
+    if hasattr(obj, 'to_mesh_clear'):
+        # Blender 4.0 and earlier
+        obj.to_mesh_clear()
+    else:
+        # Blender 4.1+ - to_mesh_clear was removed
+        # The temporary mesh is automatically cleaned up by garbage collection
+        pass
+
+def set_material_blend_method_compatible(material, blend_method='OPAQUE', shadow_method='OPAQUE', alpha_threshold=0.5):
+    """Set material blend and shadow methods in a version-compatible way"""
+    # blend_method is still available in Blender 4.4
+    if hasattr(material, 'blend_method'):
+        material.blend_method = blend_method
+    
+    # shadow_method was deprecated in Blender 4.1+
+    if hasattr(material, 'shadow_method'):
+        # Blender 4.0 and earlier
+        material.shadow_method = shadow_method
+    else:
+        # Blender 4.1+ - shadow_method was removed
+        # Shadow behavior is now handled automatically based on blend_method
+        pass
+    
+    # alpha_threshold is still available
+    if hasattr(material, 'alpha_threshold') and blend_method == 'CLIP':
+        material.alpha_threshold = alpha_threshold 
