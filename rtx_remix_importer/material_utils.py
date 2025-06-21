@@ -42,38 +42,414 @@ def _generate_material_cache_key(usd_material_path, usd_file_path_context):
 
 # --- Custom Node Group Handling ---
 APERTURE_OPAQUE_NODE_GROUP_NAME = "Aperture Opaque"
+APERTURE_TRANSLUCENT_NODE_GROUP_NAME = "Aperture Translucent"
 
-def append_aperture_opaque_node_group():
+def set_principled_transmission(node, value):
+    """Set transmission value on Principled BSDF, handling different Blender versions."""
+    if 'Transmission Weight' in node.inputs:
+        node.inputs['Transmission Weight'].default_value = value
+    elif 'Transmission' in node.inputs:
+        node.inputs['Transmission'].default_value = value
+    else:
+        print(f"Warning: No transmission input found on {node.name}")
+
+def get_principled_transmission(node):
+    """Get transmission value from Principled BSDF, handling different Blender versions."""
+    if 'Transmission Weight' in node.inputs:
+        return node.inputs['Transmission Weight']
+    elif 'Transmission' in node.inputs:
+        return node.inputs['Transmission']
+    return None
+
+def create_aperture_opaque_node_group():
     """
-    Appends the 'Aperture Opaque' node group from the addon's .blend file
-    if it doesn't already exist in the current Blender data.
+    Creates the 'Aperture Opaque' node group programmatically.
     Returns the node group.
     """
     if APERTURE_OPAQUE_NODE_GROUP_NAME in bpy.data.node_groups:
         print(f"Node group '{APERTURE_OPAQUE_NODE_GROUP_NAME}' already exists.")
         return bpy.data.node_groups[APERTURE_OPAQUE_NODE_GROUP_NAME]
 
-    # Construct the path to the .blend file
-    # Assuming constants.ADDON_DIR is the root of the addon
+    # Create new node group
+    node_group = bpy.data.node_groups.new(name=APERTURE_OPAQUE_NODE_GROUP_NAME, type='ShaderNodeTree')
+    
+    # Create input and output nodes
+    group_inputs = node_group.nodes.new('NodeGroupInput')
+    group_outputs = node_group.nodes.new('NodeGroupOutput')
+    group_inputs.location = (-600, 0)
+    group_outputs.location = (600, 0)
+    
+    # For opaque materials, we'll create a simplified node group with basic PBR inputs
+    # This can be expanded later based on the actual AperturePBR_Opaque specification
+    input_sockets = [
+        ('NodeSocketColor', 'Base Color', (0.8, 0.8, 0.8, 1.0)),
+        ('NodeSocketFloat', 'Metallic', 0.0, 0.0, 1.0),
+        ('NodeSocketFloat', 'Roughness', 0.5, 0.0, 1.0),
+        ('NodeSocketFloat', 'IOR', 1.45, 1.0, 3.0),
+        ('NodeSocketColor', 'Emissive Color', (0.0, 0.0, 0.0, 1.0)),
+        ('NodeSocketFloat', 'Emissive Intensity', 1.0, 0.0, 65504.0),
+        ('NodeSocketVector', 'Normal Map', (0.0, 0.0, 1.0))
+    ]
+    
+    # Create input sockets (compatible with different Blender versions)
+    for socket_data in input_sockets:
+        if len(socket_data) == 3:  # Color or Vector socket
+            socket_type, socket_name, default_value = socket_data
+            try:
+                socket = node_group.interface.new_socket(name=socket_name, in_out='INPUT', socket_type=socket_type)
+                if hasattr(socket, 'default_value'):
+                    socket.default_value = default_value
+            except AttributeError:
+                socket = node_group.inputs.new(socket_type, socket_name)
+                if hasattr(socket, 'default_value'):
+                    socket.default_value = default_value
+        elif len(socket_data) == 5:  # Float socket with min/max
+            socket_type, socket_name, default_value, min_val, max_val = socket_data
+            try:
+                socket = node_group.interface.new_socket(name=socket_name, in_out='INPUT', socket_type=socket_type)
+                if hasattr(socket, 'default_value'):
+                    socket.default_value = default_value
+                if hasattr(socket, 'min_value'):
+                    socket.min_value = min_val
+                if hasattr(socket, 'max_value'):
+                    socket.max_value = max_val
+            except AttributeError:
+                socket = node_group.inputs.new(socket_type, socket_name)
+                if hasattr(socket, 'default_value'):
+                    socket.default_value = default_value
+                if hasattr(socket, 'min_value'):
+                    socket.min_value = min_val
+                if hasattr(socket, 'max_value'):
+                    socket.max_value = max_val
+    
+    # Create output sockets
+    try:
+        node_group.interface.new_socket(name='BSDF', in_out='OUTPUT', socket_type='NodeSocketShader')
+        node_group.interface.new_socket(name='Displacement', in_out='OUTPUT', socket_type='NodeSocketVector')
+    except AttributeError:
+        node_group.outputs.new('NodeSocketShader', 'BSDF')
+        node_group.outputs.new('NodeSocketVector', 'Displacement')
+    
+    # Create nodes for the shader network
+    nodes = node_group.nodes
+    links = node_group.links
+    
+    # Main Principled BSDF
+    main_bsdf = nodes.new(type='ShaderNodeBsdfPrincipled')
+    main_bsdf.location = (0, 0)
+    main_bsdf.name = "Main_BSDF"
+    
+    # Normal map node
+    normal_map = nodes.new(type='ShaderNodeNormalMap')
+    normal_map.location = (-300, -200)
+    
+    # Emission shader
+    emission = nodes.new(type='ShaderNodeEmission')
+    emission.location = (0, -300)
+    
+    # Math node for emission intensity
+    emission_mult = nodes.new(type='ShaderNodeMath')
+    emission_mult.location = (-200, -300)
+    emission_mult.operation = 'MULTIPLY'
+    
+    # Mix shader for emission
+    mix_emission = nodes.new(type='ShaderNodeMixShader')
+    mix_emission.location = (300, 0)
+    mix_emission.name = "Mix_Emission"
+    
+    # Math node to check if emission is enabled (intensity > 0)
+    emission_check = nodes.new(type='ShaderNodeMath')
+    emission_check.location = (-200, -400)
+    emission_check.operation = 'GREATER_THAN'
+    emission_check.inputs[1].default_value = 0.0
+    
+    # Value node for displacement (constant zero)
+    displacement_value = nodes.new(type='ShaderNodeValue')
+    displacement_value.location = (300, -200)
+    displacement_value.outputs[0].default_value = 0.0
+    
+    # Create links - Input connections
+    links.new(group_inputs.outputs['Base Color'], main_bsdf.inputs['Base Color'])
+    links.new(group_inputs.outputs['Metallic'], main_bsdf.inputs['Metallic'])
+    links.new(group_inputs.outputs['Roughness'], main_bsdf.inputs['Roughness'])
+    links.new(group_inputs.outputs['IOR'], main_bsdf.inputs['IOR'])
+    links.new(group_inputs.outputs['Normal Map'], normal_map.inputs['Color'])
+    links.new(group_inputs.outputs['Emissive Color'], emission.inputs['Color'])
+    links.new(group_inputs.outputs['Emissive Intensity'], emission_mult.inputs[0])
+    links.new(group_inputs.outputs['Emissive Intensity'], emission_check.inputs[0])
+    
+    # Internal node connections
+    links.new(normal_map.outputs['Normal'], main_bsdf.inputs['Normal'])
+    links.new(emission_mult.outputs['Value'], emission.inputs['Strength'])
+    links.new(emission_check.outputs['Value'], mix_emission.inputs['Fac'])
+    links.new(main_bsdf.outputs['BSDF'], mix_emission.inputs[1])  # Shader input 1
+    links.new(emission.outputs['Emission'], mix_emission.inputs[2])  # Shader input 2
+    
+    # Set a constant 1.0 for the emission multiplier second input
+    emission_mult.inputs[1].default_value = 1.0
+    
+    # Output connections
+    links.new(mix_emission.outputs['Shader'], group_outputs.inputs['BSDF'])
+    links.new(displacement_value.outputs['Value'], group_outputs.inputs['Displacement'])
+    
+    print(f"Successfully created node group: {APERTURE_OPAQUE_NODE_GROUP_NAME}")
+    return node_group
+
+
+def append_aperture_opaque_node_group():
+    """
+    Appends the 'Aperture Opaque' node group from the addon's .blend file
+    if it doesn't already exist in the current Blender data.
+    If the .blend file doesn't exist, creates the node group programmatically.
+    Returns the node group.
+    """
+    if APERTURE_OPAQUE_NODE_GROUP_NAME in bpy.data.node_groups:
+        print(f"Node group '{APERTURE_OPAQUE_NODE_GROUP_NAME}' already exists.")
+        return bpy.data.node_groups[APERTURE_OPAQUE_NODE_GROUP_NAME]
+
+    # First try to load from .blend file
     blend_file_path = os.path.join(constants.ADDON_DIR, "nodes", "ApertureOpaque.blend")
 
-    if not os.path.exists(blend_file_path):
-        print(f"ERROR: Could not find ApertureOpaque.blend at {blend_file_path}")
-        return None
+    if os.path.exists(blend_file_path):
+        try:
+            with bpy.data.libraries.load(blend_file_path, link=False) as (data_from, data_to):
+                if APERTURE_OPAQUE_NODE_GROUP_NAME in data_from.node_groups:
+                    data_to.node_groups = [APERTURE_OPAQUE_NODE_GROUP_NAME]
+                    print(f"Successfully appended node group from file: {APERTURE_OPAQUE_NODE_GROUP_NAME}")
+                    return bpy.data.node_groups.get(APERTURE_OPAQUE_NODE_GROUP_NAME)
+                else:
+                    print(f"WARNING: Node group '{APERTURE_OPAQUE_NODE_GROUP_NAME}' not found in {blend_file_path}")
+        except Exception as e:
+            print(f"WARNING: Failed to load node group from {blend_file_path}: {e}")
+    else:
+        print(f"INFO: ApertureOpaque.blend not found at {blend_file_path}")
 
+    # Fallback to programmatic creation
+    print("Creating Aperture Opaque node group programmatically...")
+    return create_aperture_opaque_node_group()
+
+
+def create_aperture_translucent_node_group():
+    """
+    Creates the 'Aperture Translucent' node group programmatically.
+    Returns the node group.
+    """
+    if APERTURE_TRANSLUCENT_NODE_GROUP_NAME in bpy.data.node_groups:
+        print(f"Node group '{APERTURE_TRANSLUCENT_NODE_GROUP_NAME}' already exists.")
+        return bpy.data.node_groups[APERTURE_TRANSLUCENT_NODE_GROUP_NAME]
+
+    # Create new node group
+    node_group = bpy.data.node_groups.new(name=APERTURE_TRANSLUCENT_NODE_GROUP_NAME, type='ShaderNodeTree')
+    
+    # Create input and output nodes
+    group_inputs = node_group.nodes.new('NodeGroupInput')
+    group_outputs = node_group.nodes.new('NodeGroupOutput')
+    group_inputs.location = (-800, 0)
+    group_outputs.location = (800, 0)
+    
+    # Define input sockets with their types and default values
+    # Note: Using float sockets with 0.0/1.0 range for boolean-like behavior since NodeSocketBool isn't available in all Blender versions
+    # The boolean-like inputs are processed through ROUND math nodes to snap to clean 0.0/1.0 values
+    input_sockets = [
+        ('NodeSocketColor', 'Transmittance/Diffuse Albedo', (0.97, 0.97, 0.97, 1.0)),
+        ('NodeSocketFloat', 'IOR', 1.3, 1.0, 3.0),
+        ('NodeSocketFloat', 'Thin Walled', 0.0, 0.0, 1.0),  # Boolean as float
+        ('NodeSocketFloat', 'Thin Wall Thickness', 1.0, 0.001, 65504.0),
+        ('NodeSocketFloat', 'Use Diffuse Layer', 0.0, 0.0, 1.0),  # Boolean as float
+        ('NodeSocketFloat', 'Transmittance Measurement Distance', 1.0, 0.001, 65504.0),
+        ('NodeSocketFloat', 'Enable Emission', 0.0, 0.0, 1.0),  # Boolean as float
+        ('NodeSocketColor', 'Emissive Color', (1.0, 0.1, 0.1, 1.0)),
+        ('NodeSocketFloat', 'Emissive Intensity', 40.0, 0.0, 65504.0),
+        ('NodeSocketVector', 'Normal Map', (0.0, 0.0, 1.0))
+    ]
+    
+    # Create input sockets (compatible with different Blender versions)
+    for socket_data in input_sockets:
+        if len(socket_data) == 3:  # Color or Vector socket
+            socket_type, socket_name, default_value = socket_data
+            try:
+                # Try new Blender 4.0+ interface
+                socket = node_group.interface.new_socket(name=socket_name, in_out='INPUT', socket_type=socket_type)
+                if hasattr(socket, 'default_value'):
+                    socket.default_value = default_value
+            except AttributeError:
+                # Fallback for older Blender versions
+                socket = node_group.inputs.new(socket_type, socket_name)
+                if hasattr(socket, 'default_value'):
+                    socket.default_value = default_value
+        elif len(socket_data) == 5:  # Float socket with min/max
+            socket_type, socket_name, default_value, min_val, max_val = socket_data
+            try:
+                # Try new Blender 4.0+ interface
+                socket = node_group.interface.new_socket(name=socket_name, in_out='INPUT', socket_type=socket_type)
+                if hasattr(socket, 'default_value'):
+                    socket.default_value = default_value
+                if hasattr(socket, 'min_value'):
+                    socket.min_value = min_val
+                if hasattr(socket, 'max_value'):
+                    socket.max_value = max_val
+                    
+                # For boolean-like floats (0.0-1.0 range), set step size for better UI
+                is_boolean_like = (socket_name in ['Thin Walled', 'Use Diffuse Layer', 'Enable Emission'] and 
+                                 min_val == 0.0 and max_val == 1.0)
+                if is_boolean_like and hasattr(socket, 'step'):
+                    socket.step = 100  # Makes it snap to 0.0 or 1.0
+            except AttributeError:
+                # Fallback for older Blender versions
+                socket = node_group.inputs.new(socket_type, socket_name)
+                if hasattr(socket, 'default_value'):
+                    socket.default_value = default_value
+                if hasattr(socket, 'min_value'):
+                    socket.min_value = min_val
+                if hasattr(socket, 'max_value'):
+                    socket.max_value = max_val
+                    
+                # For boolean-like floats, set step size for better UI
+                is_boolean_like = (socket_name in ['Thin Walled', 'Use Diffuse Layer', 'Enable Emission'] and 
+                                 min_val == 0.0 and max_val == 1.0)
+                if is_boolean_like and hasattr(socket, 'step'):
+                    socket.step = 100
+    
+    # Create output sockets (compatible with different Blender versions)
     try:
-        with bpy.data.libraries.load(blend_file_path, link=False) as (data_from, data_to):
-            if APERTURE_OPAQUE_NODE_GROUP_NAME in data_from.node_groups:
-                data_to.node_groups = [APERTURE_OPAQUE_NODE_GROUP_NAME]
-                print(f"Successfully appended node group: {APERTURE_OPAQUE_NODE_GROUP_NAME}")
-            else:
-                print(f"ERROR: Node group '{APERTURE_OPAQUE_NODE_GROUP_NAME}' not found in {blend_file_path}")
-                return None
-    except Exception as e:
-        print(f"ERROR: Failed to load node group from {blend_file_path}: {e}")
-        return None
+        # Try new Blender 4.0+ interface
+        node_group.interface.new_socket(name='BSDF', in_out='OUTPUT', socket_type='NodeSocketShader')
+        node_group.interface.new_socket(name='Displacement', in_out='OUTPUT', socket_type='NodeSocketVector')
+    except AttributeError:
+        # Fallback for older Blender versions
+        node_group.outputs.new('NodeSocketShader', 'BSDF')
+        node_group.outputs.new('NodeSocketVector', 'Displacement')
+    
+    # Create nodes for the shader network
+    nodes = node_group.nodes
+    links = node_group.links
+    
+    # Main transmission BSDF
+    main_bsdf = nodes.new(type='ShaderNodeBsdfPrincipled')
+    main_bsdf.location = (0, 200)
+    main_bsdf.name = "Main_Transmission_BSDF"
+    
+    # Set transmission for translucent behavior
+    set_principled_transmission(main_bsdf, 1.0)
+    
+    main_bsdf.inputs['Roughness'].default_value = 0.0
+    
+    # Diffuse layer BSDF
+    diffuse_bsdf = nodes.new(type='ShaderNodeBsdfPrincipled')
+    diffuse_bsdf.location = (0, -200)
+    diffuse_bsdf.name = "Diffuse_Layer_BSDF"
+    
+    # Set transmission for opaque diffuse layer
+    set_principled_transmission(diffuse_bsdf, 0.0)
+    
+    # Normal map node
+    normal_map = nodes.new(type='ShaderNodeNormalMap')
+    normal_map.location = (-300, 0)
+    
+    # Mix shader for diffuse/transmission
+    mix_diffuse = nodes.new(type='ShaderNodeMixShader')
+    mix_diffuse.location = (300, 0)
+    mix_diffuse.name = "Mix_Diffuse_Transmission"
+    
+    # Emission shader
+    emission = nodes.new(type='ShaderNodeEmission')
+    emission.location = (0, -400)
+    
+    # Math node for emission intensity control
+    emission_mult = nodes.new(type='ShaderNodeMath')
+    emission_mult.location = (-200, -400)
+    emission_mult.operation = 'MULTIPLY'
+    
+    # Math nodes to snap boolean-like inputs to 0.0 or 1.0
+    thin_walled_snap = nodes.new(type='ShaderNodeMath')
+    thin_walled_snap.location = (-500, 300)
+    thin_walled_snap.operation = 'ROUND'
+    
+    use_diffuse_snap = nodes.new(type='ShaderNodeMath')
+    use_diffuse_snap.location = (-500, 100)
+    use_diffuse_snap.operation = 'ROUND'
+    
+    enable_emission_snap = nodes.new(type='ShaderNodeMath')
+    enable_emission_snap.location = (-500, -300)
+    enable_emission_snap.operation = 'ROUND'
+    
+    # Mix shader for final emission
+    mix_emission = nodes.new(type='ShaderNodeMixShader')
+    mix_emission.location = (500, 0)
+    mix_emission.name = "Mix_Final_Emission"
+    
+    # Value node for displacement (constant zero)
+    displacement_value = nodes.new(type='ShaderNodeValue')
+    displacement_value.location = (500, -200)
+    displacement_value.outputs[0].default_value = 0.0
+    
+    # Create links - Input connections
+    links.new(group_inputs.outputs['Transmittance/Diffuse Albedo'], main_bsdf.inputs['Base Color'])
+    links.new(group_inputs.outputs['Transmittance/Diffuse Albedo'], diffuse_bsdf.inputs['Base Color'])
+    links.new(group_inputs.outputs['IOR'], main_bsdf.inputs['IOR'])
+    links.new(group_inputs.outputs['IOR'], diffuse_bsdf.inputs['IOR'])
+    links.new(group_inputs.outputs['Normal Map'], normal_map.inputs['Color'])
+    links.new(group_inputs.outputs['Emissive Color'], emission.inputs['Color'])
+    links.new(group_inputs.outputs['Emissive Intensity'], emission_mult.inputs[0])
+    
+    # Connect boolean-like inputs through snap nodes for cleaner 0/1 behavior
+    links.new(group_inputs.outputs['Thin Walled'], thin_walled_snap.inputs[0])
+    links.new(group_inputs.outputs['Use Diffuse Layer'], use_diffuse_snap.inputs[0])
+    links.new(group_inputs.outputs['Enable Emission'], enable_emission_snap.inputs[0])
+    
+    # Connect snapped boolean outputs to their destinations
+    links.new(use_diffuse_snap.outputs['Value'], mix_diffuse.inputs['Fac'])
+    links.new(enable_emission_snap.outputs['Value'], emission_mult.inputs[1])
+    links.new(enable_emission_snap.outputs['Value'], mix_emission.inputs['Fac'])
+    
+    # Internal node connections
+    links.new(normal_map.outputs['Normal'], main_bsdf.inputs['Normal'])
+    links.new(normal_map.outputs['Normal'], diffuse_bsdf.inputs['Normal'])
+    links.new(emission_mult.outputs['Value'], emission.inputs['Strength'])
+    links.new(main_bsdf.outputs['BSDF'], mix_diffuse.inputs[1])  # Shader input 1
+    links.new(diffuse_bsdf.outputs['BSDF'], mix_diffuse.inputs[2])  # Shader input 2
+    links.new(mix_diffuse.outputs['Shader'], mix_emission.inputs[1])  # Shader input 1
+    links.new(emission.outputs['Emission'], mix_emission.inputs[2])  # Shader input 2
+    
+    # Output connections
+    links.new(mix_emission.outputs['Shader'], group_outputs.inputs['BSDF'])
+    links.new(displacement_value.outputs['Value'], group_outputs.inputs['Displacement'])
+    
+    print(f"Successfully created node group: {APERTURE_TRANSLUCENT_NODE_GROUP_NAME}")
+    return node_group
 
-    return bpy.data.node_groups.get(APERTURE_OPAQUE_NODE_GROUP_NAME)
+
+def append_aperture_translucent_node_group():
+    """
+    Appends the 'Aperture Translucent' node group from the addon's .blend file
+    if it doesn't already exist in the current Blender data.
+    If the .blend file doesn't exist, creates the node group programmatically.
+    Returns the node group.
+    """
+    if APERTURE_TRANSLUCENT_NODE_GROUP_NAME in bpy.data.node_groups:
+        print(f"Node group '{APERTURE_TRANSLUCENT_NODE_GROUP_NAME}' already exists.")
+        return bpy.data.node_groups[APERTURE_TRANSLUCENT_NODE_GROUP_NAME]
+
+    # First try to load from .blend file
+    blend_file_path = os.path.join(constants.ADDON_DIR, "nodes", "ApertureTranslucent.blend")
+
+    if os.path.exists(blend_file_path):
+        try:
+            with bpy.data.libraries.load(blend_file_path, link=False) as (data_from, data_to):
+                if APERTURE_TRANSLUCENT_NODE_GROUP_NAME in data_from.node_groups:
+                    data_to.node_groups = [APERTURE_TRANSLUCENT_NODE_GROUP_NAME]
+                    print(f"Successfully appended node group from file: {APERTURE_TRANSLUCENT_NODE_GROUP_NAME}")
+                    return bpy.data.node_groups.get(APERTURE_TRANSLUCENT_NODE_GROUP_NAME)
+                else:
+                    print(f"WARNING: Node group '{APERTURE_TRANSLUCENT_NODE_GROUP_NAME}' not found in {blend_file_path}")
+        except Exception as e:
+            print(f"WARNING: Failed to load node group from {blend_file_path}: {e}")
+    else:
+        print(f"INFO: ApertureTranslucent.blend not found at {blend_file_path}")
+
+    # Fallback to programmatic creation
+    print("Creating Aperture Translucent node group programmatically...")
+    return create_aperture_translucent_node_group()
 
 
 # Modified default Blender material creation function
@@ -117,6 +493,50 @@ def create_default_blender_material(name):
         # For now, we'll leave it disconnected.
 
     return mat, group_node # Return material and the group node instance
+
+
+def create_translucent_blender_material(name):
+    """Creates a Blender material using the custom 'Aperture Translucent' node group."""
+    mat = bpy.data.materials.new(name=name)
+    mat.use_nodes = True
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+    nodes.clear()
+
+    output_node = nodes.new(type='ShaderNodeOutputMaterial')
+    output_node.location = (300, 0)
+
+    aperture_node_group = append_aperture_translucent_node_group()
+    if not aperture_node_group:
+        print(f"ERROR: Could not append or find '{APERTURE_TRANSLUCENT_NODE_GROUP_NAME}'. Creating a fallback Principled BSDF.")
+        # Fallback to Principled BSDF with transmission settings
+        bsdf = nodes.new(type='ShaderNodeBsdfPrincipled')
+        bsdf.location = (0, 0)
+        # Set up for transmission
+        set_principled_transmission(bsdf, 1.0)
+        bsdf.inputs['IOR'].default_value = 1.3
+        links.new(bsdf.outputs['BSDF'], output_node.inputs['Surface'])
+        return mat, bsdf
+
+    # Add an instance of the custom node group
+    group_node = nodes.new(type='ShaderNodeGroup')
+    group_node.node_tree = aperture_node_group
+    group_node.name = APERTURE_TRANSLUCENT_NODE_GROUP_NAME
+    group_node.location = (0, 0)
+
+    # Connect the group node's outputs to the material output
+    if 'BSDF' in group_node.outputs:
+        links.new(group_node.outputs['BSDF'], output_node.inputs['Surface'])
+    else:
+        print(f"WARNING: Output 'BSDF' not found in '{APERTURE_TRANSLUCENT_NODE_GROUP_NAME}' node group.")
+
+    if 'Displacement' in group_node.outputs:
+        links.new(group_node.outputs['Displacement'], output_node.inputs['Displacement'])
+    else:
+        print(f"WARNING: Output 'Displacement' not found in '{APERTURE_TRANSLUCENT_NODE_GROUP_NAME}' node group.")
+
+    return mat, group_node
+
 
 # Create material from USD path
 def create_material(usd_material_path, usd_stage, usd_file_path_context):
@@ -181,23 +601,38 @@ def create_material(usd_material_path, usd_stage, usd_file_path_context):
         _global_material_cache[cache_key] = existing_material
         return existing_material
 
-    # Create new Blender material using the default setup
-    bl_material, main_shader_node = create_default_blender_material(unique_material_name)
-    nodes = bl_material.node_tree.nodes
-
-    if not main_shader_node: # Check if main_shader_node (group or fallback BSDF) was created
-        print(f"ERROR: Could not create main shader node in new material '{unique_material_name}'.")
-        return bl_material # Return the basic material
-
     # Find the actual shader connected to the material surface
     surface_shader = get_shader_from_material(material_prim)
     if not surface_shader:
         print(f"WARNING: No surface shader found for material: {unique_material_name}. Using default Principled BSDF.")
+        bl_material, main_shader_node = create_default_blender_material(unique_material_name)
         _global_material_cache[cache_key] = bl_material
         return bl_material # Return the default material
 
     shader_prim = surface_shader.GetPrim()
     print(f"Found shader '{shader_prim.GetName()}' (type: {shader_prim.GetTypeName()}) for material '{unique_material_name}'")
+    
+    # Determine material type based on shader MDL source asset
+    is_translucent = False
+    mdl_source_asset = get_input_value(surface_shader, "info:mdl:sourceAsset")
+    if mdl_source_asset:
+        mdl_asset_str = str(mdl_source_asset)
+        print(f"Detected MDL source asset: {mdl_asset_str}")
+        if "AperturePBR_Translucent" in mdl_asset_str:
+            is_translucent = True
+            print("Material identified as AperturePBR_Translucent")
+    
+    # Create appropriate Blender material based on type
+    if is_translucent:
+        bl_material, main_shader_node = create_translucent_blender_material(unique_material_name)
+    else:
+        bl_material, main_shader_node = create_default_blender_material(unique_material_name)
+    
+    nodes = bl_material.node_tree.nodes
+
+    if not main_shader_node: # Check if main_shader_node (group or fallback BSDF) was created
+        print(f"ERROR: Could not create main shader node in new material '{unique_material_name}'.")
+        return bl_material # Return the basic material
 
     # --- DEBUG: Print shader inputs --- #
     print(f"      Available inputs on {shader_prim.GetPath()}:")
@@ -333,28 +768,47 @@ def process_pbr(shader, bl_material, shader_node, usd_file_path_context):
     links = bl_material.node_tree.links
     print(f"    Processing PBR inputs for shader: {shader.GetPath()} onto node: {shader_node.name}") # LOGGING
 
-    # Updated map for "Aperture Opaque" node group inputs
-    # Keys are Aperture Opaque input socket names, values are lists of USD input names to try.
-    input_map = {
-        # From your export.json and common PBR:
-        "Albedo Color": ["inputs:diffuse_texture", "diffuse_texture", "diffuse_color_constant"],
-        "Opacity": ["inputs:opacity_texture", "opacity_texture", "opacity_constant", "inputs:opacity", "opacity"], # Added more specific opacity
-        "Roughness": ["inputs:reflectionroughness_texture", "reflectionroughness_texture", "reflection_roughness_constant"],
-        "Metallic": ["inputs:metallic_texture", "metallic_texture", "metallic_constant"],
-        "Normal Map": ["inputs:normalmap_texture", "normalmap_texture"], # This will be handled by process_input creating a Normal Map node
-        "Height Map": ["inputs:height_texture", "height_texture", "height_constant"], # For displacement
+    # Determine if this is a translucent material based on the node group name
+    is_translucent = shader_node.name == APERTURE_TRANSLUCENT_NODE_GROUP_NAME
+    
+    if is_translucent:
+        # Input map for "Aperture Translucent" node group
+        input_map = {
+            "Transmittance/Diffuse Albedo": ["inputs:transmittance_texture", "transmittance_texture", "inputs:transmittance_color", "transmittance_color"],
+            "IOR": ["inputs:ior_constant", "ior_constant"],
+            "Thin Walled": ["inputs:thin_walled", "thin_walled"],
+            "Thin Wall Thickness": ["inputs:thin_wall_thickness", "thin_wall_thickness"],
+            "Use Diffuse Layer": ["inputs:use_diffuse_layer", "use_diffuse_layer"],
+            "Transmittance Measurement Distance": ["inputs:transmittance_measurement_distance", "transmittance_measurement_distance"],
+            "Normal Map": ["inputs:normalmap_texture", "normalmap_texture"],
+            
+            # Emission inputs
+            "Enable Emission": ["inputs:enable_emission", "enable_emission"],
+            "Emissive Color": ["inputs:emissive_color", "emissive_color"],
+            "Emissive Intensity": ["inputs:emissive_intensity", "emissive_intensity"],
+        }
+    else:
+        # Input map for "Aperture Opaque" node group
+        input_map = {
+            # From your export.json and common PBR:
+            "Albedo Color": ["inputs:diffuse_texture", "diffuse_texture", "diffuse_color_constant"],
+            "Opacity": ["inputs:opacity_texture", "opacity_texture", "opacity_constant", "inputs:opacity", "opacity"], # Added more specific opacity
+            "Roughness": ["inputs:reflectionroughness_texture", "reflectionroughness_texture", "reflection_roughness_constant"],
+            "Metallic": ["inputs:metallic_texture", "metallic_texture", "metallic_constant"],
+            "Normal Map": ["inputs:normalmap_texture", "normalmap_texture"], # This will be handled by process_input creating a Normal Map node
+            "Height Map": ["inputs:height_texture", "height_texture", "height_constant"], # For displacement
 
-        # Emission (matching export.json)
-        "Enable Emission": ["inputs:enable_emission"], # This might control visibility of other emission inputs
-        "Emissive Color": ["inputs:emissive_mask_texture", "emissive_mask_texture", "emissive_color_constant"],
-        "Emissive Intensity": ["inputs:emissive_intensity", "emissive_intensity"],
+            # Emission (matching export.json)
+            "Enable Emission": ["inputs:enable_emission"], # This might control visibility of other emission inputs
+            "Emissive Color": ["inputs:emissive_mask_texture", "emissive_mask_texture", "emissive_color_constant"],
+            "Emissive Intensity": ["inputs:emissive_intensity", "emissive_intensity"],
 
-        # Other potential direct mappings from export.json (if they are top-level inputs in the group)
-        # "Enable Iridescence": ["inputs:enable_iridescence"], # Example, if such an input exists
-        # "Thickness": ["inputs:thickness"], # Example
-        # "Inwards Displacement": ["inputs:inwards_displacement"], # Example for direct value
-        # "Outwards Displacement": ["inputs:outwards_displacement"], # Example for direct value
-    }
+            # Other potential direct mappings from export.json (if they are top-level inputs in the group)
+            # "Enable Iridescence": ["inputs:enable_iridescence"], # Example, if such an input exists
+            # "Thickness": ["inputs:thickness"], # Example
+            # "Inwards Displacement": ["inputs:inwards_displacement"], # Example for direct value
+            # "Outwards Displacement": ["inputs:outwards_displacement"], # Example for direct value
+        }
 
     # Y position for texture nodes will be relative to the shader_node
     base_y_pos = shader_node.location.y

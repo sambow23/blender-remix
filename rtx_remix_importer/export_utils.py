@@ -129,6 +129,23 @@ class ShaderSetup:
         shader_prim.CreateAttribute("info:implementationSource", Sdf.ValueTypeNames.Token).Set("sourceAsset")
         shader_prim.CreateAttribute("info:mdl:sourceAsset", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(f"{mdl_name}.mdl"))
         shader_prim.CreateAttribute("info:mdl:sourceAsset:subIdentifier", Sdf.ValueTypeNames.Token).Set(mdl_name)
+    
+    @staticmethod
+    def detect_material_type(blender_material: bpy.types.Material) -> str:
+        """Detect the material type based on the node group used."""
+        if not blender_material.use_nodes:
+            return "AperturePBR_Opacity"
+        
+        # Look for custom node groups
+        for node in blender_material.node_tree.nodes:
+            if node.type == 'GROUP' and node.node_tree:
+                if "Aperture Translucent" in node.node_tree.name:
+                    return "AperturePBR_Translucent"
+                elif "Aperture Opaque" in node.node_tree.name:
+                    return "AperturePBR_Opacity"
+        
+        # Default to opacity type
+        return "AperturePBR_Opacity"
 
 # --- Texture Export ---
 
@@ -313,6 +330,18 @@ class NodeAnalyzer:
         return None
     
     @staticmethod
+    def find_aperture_node_group(material: bpy.types.Material) -> Optional[bpy.types.Node]:
+        """Find the Aperture node group (Opaque or Translucent) in a material."""
+        if not material.use_nodes or not material.node_tree:
+            return None
+        
+        for node in material.node_tree.nodes:
+            if node.type == 'GROUP' and node.node_tree:
+                if "Aperture" in node.node_tree.name:
+                    return node
+        return None
+    
+    @staticmethod
     def find_connected_image_node(socket: bpy.types.NodeSocket) -> Optional[bpy.types.Node]:
         """Find the connected image texture node for a socket."""
         if not socket or not socket.is_linked:
@@ -378,43 +407,72 @@ class MaterialExporter:
         
         progress.step("Material path created")
         
-        # Setup shader
+        # Setup shader with detected material type
+        material_type = self.shader_setup.detect_material_type(blender_material)
         self.shader_setup.setup_material_connections(material_prim, shader_prim)
-        self.shader_setup.setup_shader_attributes(shader_prim)
+        self.shader_setup.setup_shader_attributes(shader_prim, material_type)
         progress.step("Shader setup complete")
         
-        # Find Principled BSDF
-        principled_node = self.node_analyzer.find_principled_bsdf(blender_material)
-        if not principled_node:
-            progress.step("No Principled BSDF found, using defaults")
+        # Find main shader node (Aperture node group or Principled BSDF)
+        main_node = self.node_analyzer.find_aperture_node_group(blender_material)
+        if not main_node:
+            main_node = self.node_analyzer.find_principled_bsdf(blender_material)
+        
+        if not main_node:
+            progress.step("No shader node found, using defaults")
             return mat_path
         
-        # Export textures
-        await self._export_material_textures(principled_node, shader_prim, progress)
+        # Export textures based on material type
+        print(f"DEBUG: About to export textures with material_type: {material_type}")
+        await self._export_material_textures(main_node, shader_prim, progress, material_type)
         
         progress.step("Material export complete")
         return mat_path
     
     async def _export_material_textures(
         self,
-        principled_node: bpy.types.Node,
+        shader_node: bpy.types.Node,
         shader_prim: Usd.Prim,
-        progress: ProgressTracker
+        progress: ProgressTracker,
+        material_type: str = "AperturePBR_Opacity"
     ):
         """Export textures for a material."""
-        texture_mappings = [
-            ('Base Color', 'inputs:diffuse_texture', 'inputs:diffuse_color_constant', 'base color'),
-            ('Metallic', 'inputs:metallic_texture', 'inputs:metallic_constant', 'metallic'),
-            ('Roughness', 'inputs:reflectionroughness_texture', 'inputs:reflection_roughness_constant', 'roughness'),
-            ('Normal', 'inputs:normalmap_texture', None, 'normal'),
-            # More need to be added but this is a good start
-        ]
+        print(f"DEBUG: _export_material_textures called with material_type: {material_type}")
+        if material_type == "AperturePBR_Translucent":
+            # Translucent material texture mappings
+            texture_mappings = [
+                ('Transmittance/Diffuse Albedo', 'inputs:transmittance_texture', 'inputs:transmittance_color', 'base color'),
+                ('Normal Map', 'inputs:normalmap_texture', None, 'normal'),
+            ]
+            
+            # Also handle constant values for translucent materials
+            constant_mappings = [
+                ('IOR', 'inputs:ior_constant'),
+                ('Thin Walled', 'inputs:thin_walled'),
+                ('Thin Wall Thickness', 'inputs:thin_wall_thickness'),
+                ('Use Diffuse Layer', 'inputs:use_diffuse_layer'),
+                ('Transmittance Measurement Distance', 'inputs:transmittance_measurement_distance'),
+                ('Enable Emission', 'inputs:enable_emission'),
+                ('Emissive Color', 'inputs:emissive_color'),
+                ('Emissive Intensity', 'inputs:emissive_intensity'),
+            ]
+        else:
+            # Opaque material texture mappings (existing)
+            texture_mappings = [
+                ('Base Color', 'inputs:diffuse_texture', 'inputs:diffuse_color_constant', 'base color'),
+                ('Metallic', 'inputs:metallic_texture', 'inputs:metallic_constant', 'metallic'),
+                ('Roughness', 'inputs:reflectionroughness_texture', 'inputs:reflection_roughness_constant', 'roughness'),
+                ('Normal', 'inputs:normalmap_texture', None, 'normal'),
+                # More need to be added but this is a good start
+            ]
+            constant_mappings = []
         
+        # Process texture mappings
         for socket_name, texture_attr, constant_attr, texture_type in texture_mappings:
             if progress.is_cancelled():
                 break
             
-            socket = principled_node.inputs.get(socket_name)
+            socket = shader_node.inputs.get(socket_name)
             if not socket:
                 continue
             
@@ -431,18 +489,41 @@ class MaterialExporter:
                 
                 if texture_path:
                     shader_prim.CreateAttribute(texture_attr, Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(texture_path))
-                    if socket_name == 'Normal':
+                    if socket_name in ['Normal', 'Normal Map']:
                         shader_prim.CreateAttribute("inputs:encoding", Sdf.ValueTypeNames.Int).Set(2)
             
             elif constant_attr and socket:
                 # Set constant value
                 value = socket.default_value
-                if socket_name == 'Base Color':
-                    shader_prim.CreateAttribute(constant_attr, Sdf.ValueTypeNames.Color3f).Set(
-                        Gf.Vec3f(value[0], value[1], value[2])
-                    )
+                if socket_name in ['Base Color', 'Transmittance/Diffuse Albedo', 'Emissive Color']:
+                    if hasattr(value, '__len__') and len(value) >= 3:
+                        shader_prim.CreateAttribute(constant_attr, Sdf.ValueTypeNames.Color3f).Set(
+                            Gf.Vec3f(value[0], value[1], value[2])
+                        )
                 else:
                     shader_prim.CreateAttribute(constant_attr, Sdf.ValueTypeNames.Float).Set(float(value))
+        
+        # Process constant-only mappings for translucent materials
+        if material_type == "AperturePBR_Translucent":
+            for socket_name, usd_attr in constant_mappings:
+                if progress.is_cancelled():
+                    break
+                
+                socket = shader_node.inputs.get(socket_name)
+                if socket:
+                    value = socket.default_value
+                    if socket_name in ['Enable Emission', 'Thin Walled', 'Use Diffuse Layer']:
+                        # Boolean values
+                        shader_prim.CreateAttribute(usd_attr, Sdf.ValueTypeNames.Bool).Set(bool(value))
+                    elif socket_name == 'Emissive Color':
+                        # Color value
+                        if hasattr(value, '__len__') and len(value) >= 3:
+                            shader_prim.CreateAttribute(usd_attr, Sdf.ValueTypeNames.Color3f).Set(
+                                Gf.Vec3f(value[0], value[1], value[2])
+                            )
+                    else:
+                        # Float values
+                        shader_prim.CreateAttribute(usd_attr, Sdf.ValueTypeNames.Float).Set(float(value))
     
     def export_material_sync(
         self,

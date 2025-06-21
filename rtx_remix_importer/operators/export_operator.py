@@ -231,10 +231,14 @@ def export_material(blender_material, sublayer_stage, project_root, sublayer_pat
     material_api.CreateDisplacementOutput("mdl:displacement").ConnectToSource(shader_output)
     material_api.CreateVolumeOutput("mdl:volume").ConnectToSource(shader_output)
 
-    # Set shader attributes
+    # Set shader attributes - detect material type
+    from ..export_utils import ShaderSetup
+    material_type = ShaderSetup.detect_material_type(blender_material)
+    print(f"  Detected material type: {material_type}")
+    
     shader_prim.CreateAttribute("info:implementationSource", Sdf.ValueTypeNames.Token).Set("sourceAsset")
-    shader_prim.CreateAttribute("info:mdl:sourceAsset", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath("AperturePBR_Opacity.mdl"))
-    shader_prim.CreateAttribute("info:mdl:sourceAsset:subIdentifier", Sdf.ValueTypeNames.Token).Set("AperturePBR_Opacity")
+    shader_prim.CreateAttribute("info:mdl:sourceAsset", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(f"{material_type}.mdl"))
+    shader_prim.CreateAttribute("info:mdl:sourceAsset:subIdentifier", Sdf.ValueTypeNames.Token).Set(material_type)
 
     # Find Principled BSDF or group node
     principled_node = None
@@ -402,11 +406,19 @@ def export_material(blender_material, sublayer_stage, project_root, sublayer_pat
 
         return None, None
 
-    # Collect all textures for parallel processing
-    diffuse_image, diffuse_rel_path = find_texture_for_socket('Base Color', 'BC7_UNORM_SRGB')
-    metallic_image, metallic_rel_path = find_texture_for_socket('Metallic', 'BC4_UNORM')
-    roughness_image, roughness_rel_path = find_texture_for_socket('Roughness', 'BC4_UNORM')
-    normal_image, normal_rel_path = find_texture_for_socket('Normal', 'BC5_UNORM')
+    # Collect all textures for parallel processing based on material type
+    if material_type == "AperturePBR_Translucent":
+        # For translucent materials, look for transmittance texture
+        diffuse_image, diffuse_rel_path = find_texture_for_socket('Transmittance/Diffuse Albedo', 'BC7_UNORM_SRGB')
+        metallic_image, metallic_rel_path = None, None  # Not used in translucent
+        roughness_image, roughness_rel_path = None, None  # Not used in translucent
+        normal_image, normal_rel_path = find_texture_for_socket('Normal Map', 'BC5_UNORM')
+    else:
+        # For opaque materials, use standard PBR textures
+        diffuse_image, diffuse_rel_path = find_texture_for_socket('Base Color', 'BC7_UNORM_SRGB')
+        metallic_image, metallic_rel_path = find_texture_for_socket('Metallic', 'BC4_UNORM')
+        roughness_image, roughness_rel_path = find_texture_for_socket('Roughness', 'BC4_UNORM')
+        normal_image, normal_rel_path = find_texture_for_socket('Normal', 'BC5_UNORM')
     
     # Check for emission and collect emissive textures
     enable_emission = False
@@ -535,118 +547,177 @@ def export_material(blender_material, sublayer_stage, project_root, sublayer_pat
         
         # The export continues immediately using the texture paths (existing or future)
 
-    # Set material attributes based on processing results
-    # Diffuse / Albedo (BC7 SRGB)
-    if diffuse_rel_path:
-        shader_prim.CreateAttribute("inputs:diffuse_texture", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(diffuse_rel_path))
-        print(f"    Set diffuse_texture: {diffuse_rel_path}")
-    else:
-        # Get base color value based on node type
-        if principled_node.type == 'GROUP':
-            # For Aperture Opaque, the input is named "Albedo Color"
-            base_color_socket = principled_node.inputs.get('Albedo Color') or principled_node.inputs.get('Base Color')
-            base_color = base_color_socket.default_value if base_color_socket else (0.8, 0.8, 0.8, 1.0)
-        else:
-            base_color = principled_node.inputs['Base Color'].default_value
-        # Create a constant color attribute
-        shader_prim.CreateAttribute("inputs:diffuse_color_constant", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(base_color[0], base_color[1], base_color[2]))
-        print(f"    Set diffuse_color_constant: {base_color[:3]}")
-
-    # Metallic (BC4 Unorm - single channel)
-    if metallic_rel_path:
-        shader_prim.CreateAttribute("inputs:metallic_texture", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(metallic_rel_path))
-        print(f"    Set metallic_texture: {metallic_rel_path}")
-    else:
-        # Get metallic value - same socket name for both node types
-        metallic_socket = principled_node.inputs.get('Metallic')
-        metallic_val = metallic_socket.default_value if metallic_socket else 0.0
-        # Create a constant value attribute
-        shader_prim.CreateAttribute("inputs:metallic_constant", Sdf.ValueTypeNames.Float).Set(metallic_val)
-        print(f"    Set metallic_constant: {metallic_val}")
-
-    # Roughness (BC4 Unorm - single channel)
-    if roughness_rel_path:
-        shader_prim.CreateAttribute("inputs:reflectionroughness_texture", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(roughness_rel_path))
-        print(f"    Set reflectionroughness_texture: {roughness_rel_path}")
-    else:
-        # Get roughness value - same socket name for both node types
-        roughness_socket = principled_node.inputs.get('Roughness')
-        roughness_val = roughness_socket.default_value if roughness_socket else 0.5
-        # Create a constant value attribute
-        shader_prim.CreateAttribute("inputs:reflection_roughness_constant", Sdf.ValueTypeNames.Float).Set(roughness_val)
-        print(f"    Set reflection_roughness_constant: {roughness_val}")
-
-    # Normal Map (BC5 Unorm - two channel)
-    if normal_rel_path:
-        shader_prim.CreateAttribute("inputs:normalmap_texture", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(normal_rel_path))
-        shader_prim.CreateAttribute("inputs:encoding", Sdf.ValueTypeNames.Int).Set(2)  # Tangent space normal
-        print(f"    Set normalmap_texture: {normal_rel_path}")
-
-    # Emission handling
-    if enable_emission:
-        shader_prim.CreateAttribute("inputs:enable_emission", Sdf.ValueTypeNames.Bool).Set(True)
-        print(f"    Set enable_emission: True")
+    # Set material attributes based on processing results and material type
+    if material_type == "AperturePBR_Translucent":
+        # Translucent material parameters
+        print("  Exporting translucent material parameters...")
         
-        # Set emissive intensity
-        emissive_intensity = 1.0
-        
-        # Try to get emission strength/intensity from the material
-        if principled_node.type == 'GROUP':
-            # Aperture Opaque node groups have "Emissive Intensity" input
-            emissive_intensity_socket = principled_node.inputs.get('Emissive Intensity')
-            if emissive_intensity_socket:
-                emissive_intensity = emissive_intensity_socket.default_value
-                print(f"    Found Aperture Opaque 'Emissive Intensity' = {emissive_intensity}")
+        # Transmittance/Diffuse Albedo
+        if diffuse_rel_path:
+            shader_prim.CreateAttribute("inputs:transmittance_texture", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(diffuse_rel_path))
+            print(f"    Set transmittance_texture: {diffuse_rel_path}")
         else:
-            # Standard Principled BSDF has Emission Strength
-            emission_strength_socket = principled_node.inputs.get('Emission Strength')
-            if emission_strength_socket:
-                emissive_intensity = emission_strength_socket.default_value
-                print(f"    Found Principled BSDF 'Emission Strength' = {emissive_intensity}")
-        
-        # Export emissive mask texture or color
-        if emissive_rel_path:
-            shader_prim.CreateAttribute("inputs:emissive_mask_texture", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(emissive_rel_path))
-            print(f"    Set emissive_mask_texture: {emissive_rel_path}")
-        else:
-            # Set emissive color constant if no texture
-            if emissive_socket:
-                emissive_color = emissive_socket.default_value
-                if len(emissive_color) >= 3:
-                    shader_prim.CreateAttribute("inputs:emissive_color_constant", Sdf.ValueTypeNames.Color3f).Set(
-                        Gf.Vec3f(emissive_color[0], emissive_color[1], emissive_color[2])
+            transmittance_socket = principled_node.inputs.get('Transmittance/Diffuse Albedo')
+            if transmittance_socket:
+                transmittance_color = transmittance_socket.default_value
+                if hasattr(transmittance_color, '__len__') and len(transmittance_color) >= 3:
+                    shader_prim.CreateAttribute("inputs:transmittance_color", Sdf.ValueTypeNames.Color3f).Set(
+                        Gf.Vec3f(transmittance_color[0], transmittance_color[1], transmittance_color[2])
                     )
-                    print(f"    Set emissive_color_constant: {emissive_color[:3]}")
+                    print(f"    Set transmittance_color: {transmittance_color[:3]}")
         
-        # Set emissive intensity
-        shader_prim.CreateAttribute("inputs:emissive_intensity", Sdf.ValueTypeNames.Float).Set(emissive_intensity)
-        print(f"    Set emissive_intensity: {emissive_intensity}")
-
-    # Opacity/Alpha handling
-    if opacity_rel_path:
-        shader_prim.CreateAttribute("inputs:opacity_texture", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(opacity_rel_path))
-        print(f"    Set opacity_texture: {opacity_rel_path}")
+        # Translucent-specific parameters
+        translucent_params = [
+            ('IOR', 'inputs:ior_constant', 'Float'),
+            ('Thin Walled', 'inputs:thin_walled', 'Bool'),
+            ('Thin Wall Thickness', 'inputs:thin_wall_thickness', 'Float'),
+            ('Use Diffuse Layer', 'inputs:use_diffuse_layer', 'Bool'),
+            ('Transmittance Measurement Distance', 'inputs:transmittance_measurement_distance', 'Float'),
+            ('Enable Emission', 'inputs:enable_emission', 'Bool'),
+            ('Emissive Intensity', 'inputs:emissive_intensity', 'Float'),
+        ]
+        
+        for socket_name, usd_attr, value_type in translucent_params:
+            socket = principled_node.inputs.get(socket_name)
+            if socket:
+                value = socket.default_value
+                if value_type == 'Bool':
+                    shader_prim.CreateAttribute(usd_attr, Sdf.ValueTypeNames.Bool).Set(bool(value))
+                else:
+                    shader_prim.CreateAttribute(usd_attr, Sdf.ValueTypeNames.Float).Set(float(value))
+                print(f"    Set {usd_attr}: {value}")
+        
+        # Emissive Color
+        emissive_color_socket = principled_node.inputs.get('Emissive Color')
+        if emissive_color_socket:
+            emissive_color = emissive_color_socket.default_value
+            if hasattr(emissive_color, '__len__') and len(emissive_color) >= 3:
+                shader_prim.CreateAttribute("inputs:emissive_color", Sdf.ValueTypeNames.Color3f).Set(
+                    Gf.Vec3f(emissive_color[0], emissive_color[1], emissive_color[2])
+                )
+                print(f"    Set emissive_color: {emissive_color[:3]}")
+        
+        # Normal Map
+        if normal_rel_path:
+            shader_prim.CreateAttribute("inputs:normalmap_texture", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(normal_rel_path))
+            shader_prim.CreateAttribute("inputs:encoding", Sdf.ValueTypeNames.Int).Set(2)  # Tangent space normal
+            print(f"    Set normalmap_texture: {normal_rel_path}")
+            
     else:
-        # Check for alpha value
-        alpha_socket = principled_node.inputs.get('Alpha')
-        if alpha_socket:
-            alpha_val = alpha_socket.default_value
-            if alpha_val < 1.0:  # Only set if not fully opaque
-                shader_prim.CreateAttribute("inputs:opacity_constant", Sdf.ValueTypeNames.Float).Set(alpha_val)
-                print(f"    Set opacity_constant: {alpha_val}")
+        # Opaque material parameters (existing logic)
+        print("  Exporting opaque material parameters...")
+        
+        # Diffuse / Albedo (BC7 SRGB)
+        if diffuse_rel_path:
+            shader_prim.CreateAttribute("inputs:diffuse_texture", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(diffuse_rel_path))
+            print(f"    Set diffuse_texture: {diffuse_rel_path}")
+        else:
+            # Get base color value based on node type
+            if principled_node.type == 'GROUP':
+                # For Aperture Opaque, the input is named "Albedo Color"
+                base_color_socket = principled_node.inputs.get('Albedo Color') or principled_node.inputs.get('Base Color')
+                base_color = base_color_socket.default_value if base_color_socket else (0.8, 0.8, 0.8, 1.0)
+            else:
+                base_color = principled_node.inputs['Base Color'].default_value
+            # Create a constant color attribute
+            shader_prim.CreateAttribute("inputs:diffuse_color_constant", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(base_color[0], base_color[1], base_color[2]))
+            print(f"    Set diffuse_color_constant: {base_color[:3]}")
 
-    # Specular handling
-    if specular_rel_path:
-        shader_prim.CreateAttribute("inputs:specular_texture", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(specular_rel_path))
-        print(f"    Set specular_texture: {specular_rel_path}")
-    else:
-        # Check for specular value
-        specular_socket = principled_node.inputs.get('Specular')
-        if specular_socket:
-            specular_val = specular_socket.default_value
-            if specular_val != 0.5:  # Only set if not default value
-                shader_prim.CreateAttribute("inputs:specular_constant", Sdf.ValueTypeNames.Float).Set(specular_val)
-                print(f"    Set specular_constant: {specular_val}")
+        # Metallic (BC4 Unorm - single channel)
+        if metallic_rel_path:
+            shader_prim.CreateAttribute("inputs:metallic_texture", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(metallic_rel_path))
+            print(f"    Set metallic_texture: {metallic_rel_path}")
+        else:
+            # Get metallic value - same socket name for both node types
+            metallic_socket = principled_node.inputs.get('Metallic')
+            metallic_val = metallic_socket.default_value if metallic_socket else 0.0
+            # Create a constant value attribute
+            shader_prim.CreateAttribute("inputs:metallic_constant", Sdf.ValueTypeNames.Float).Set(metallic_val)
+            print(f"    Set metallic_constant: {metallic_val}")
+
+        # Roughness (BC4 Unorm - single channel)
+        if roughness_rel_path:
+            shader_prim.CreateAttribute("inputs:reflectionroughness_texture", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(roughness_rel_path))
+            print(f"    Set reflectionroughness_texture: {roughness_rel_path}")
+        else:
+            # Get roughness value - same socket name for both node types
+            roughness_socket = principled_node.inputs.get('Roughness')
+            roughness_val = roughness_socket.default_value if roughness_socket else 0.5
+            # Create a constant value attribute
+            shader_prim.CreateAttribute("inputs:reflection_roughness_constant", Sdf.ValueTypeNames.Float).Set(roughness_val)
+            print(f"    Set reflection_roughness_constant: {roughness_val}")
+
+        # Normal Map (BC5 Unorm - two channel)
+        if normal_rel_path:
+            shader_prim.CreateAttribute("inputs:normalmap_texture", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(normal_rel_path))
+            shader_prim.CreateAttribute("inputs:encoding", Sdf.ValueTypeNames.Int).Set(2)  # Tangent space normal
+            print(f"    Set normalmap_texture: {normal_rel_path}")
+
+        # Emission handling
+        if enable_emission:
+            shader_prim.CreateAttribute("inputs:enable_emission", Sdf.ValueTypeNames.Bool).Set(True)
+            print(f"    Set enable_emission: True")
+            
+            # Set emissive intensity
+            emissive_intensity = 1.0
+            
+            # Try to get emission strength/intensity from the material
+            if principled_node.type == 'GROUP':
+                # Aperture Opaque node groups have "Emissive Intensity" input
+                emissive_intensity_socket = principled_node.inputs.get('Emissive Intensity')
+                if emissive_intensity_socket:
+                    emissive_intensity = emissive_intensity_socket.default_value
+                    print(f"    Found Aperture Opaque 'Emissive Intensity' = {emissive_intensity}")
+            else:
+                # Standard Principled BSDF has Emission Strength
+                emission_strength_socket = principled_node.inputs.get('Emission Strength')
+                if emission_strength_socket:
+                    emissive_intensity = emission_strength_socket.default_value
+                    print(f"    Found Principled BSDF 'Emission Strength' = {emissive_intensity}")
+            
+            # Export emissive mask texture or color
+            if emissive_rel_path:
+                shader_prim.CreateAttribute("inputs:emissive_mask_texture", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(emissive_rel_path))
+                print(f"    Set emissive_mask_texture: {emissive_rel_path}")
+            else:
+                # Set emissive color constant if no texture
+                if emissive_socket:
+                    emissive_color = emissive_socket.default_value
+                    if len(emissive_color) >= 3:
+                        shader_prim.CreateAttribute("inputs:emissive_color_constant", Sdf.ValueTypeNames.Color3f).Set(
+                            Gf.Vec3f(emissive_color[0], emissive_color[1], emissive_color[2])
+                        )
+                        print(f"    Set emissive_color_constant: {emissive_color[:3]}")
+            
+            # Set emissive intensity
+            shader_prim.CreateAttribute("inputs:emissive_intensity", Sdf.ValueTypeNames.Float).Set(emissive_intensity)
+            print(f"    Set emissive_intensity: {emissive_intensity}")
+
+        # Opacity/Alpha handling
+        if opacity_rel_path:
+            shader_prim.CreateAttribute("inputs:opacity_texture", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(opacity_rel_path))
+            print(f"    Set opacity_texture: {opacity_rel_path}")
+        else:
+            # Check for alpha value
+            alpha_socket = principled_node.inputs.get('Alpha')
+            if alpha_socket:
+                alpha_val = alpha_socket.default_value
+                if alpha_val < 1.0:  # Only set if not fully opaque
+                    shader_prim.CreateAttribute("inputs:opacity_constant", Sdf.ValueTypeNames.Float).Set(alpha_val)
+                    print(f"    Set opacity_constant: {alpha_val}")
+
+        # Specular handling
+        if specular_rel_path:
+            shader_prim.CreateAttribute("inputs:specular_texture", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(specular_rel_path))
+            print(f"    Set specular_texture: {specular_rel_path}")
+        else:
+            # Check for specular value
+            specular_socket = principled_node.inputs.get('Specular')
+            if specular_socket:
+                specular_val = specular_socket.default_value
+                if specular_val != 0.5:  # Only set if not default value
+                    shader_prim.CreateAttribute("inputs:specular_constant", Sdf.ValueTypeNames.Float).Set(specular_val)
+                    print(f"    Set specular_constant: {specular_val}")
 
     print(f"  Finished exporting Material: {blender_material.name} to {mat_path}")
     return mat_path
