@@ -6,7 +6,7 @@ This can be used as a replacement to the official NVIDIA toolkit as it's able to
 
 ## Requirements
 - A system running Windows (or use Wine on Linux)
-- [Blender 4.0.2](https://download.blender.org/release/Blender4.0/blender-4.0.2-windows-x64.zip) (not verified to work on newer versions)
+- Blender 4.0.2 or higher
 - [texconv from DirectXTex](https://github.com/microsoft/DirectXTex/releases/latest/download/texconv.exe) (only if using the git method)
 
 ## Installation
