@@ -319,10 +319,17 @@ def process_mod_pbr_util(shader_prim_instance, bl_mat_instance, main_shader_node
                                       texture_res_context_path_p, mod_file_path_for_tex_p, 
                                       (-400, base_y + y_off), is_n, is_nc, report_fn):
                 y_off -= spacing
+    # Handle alpha transparency - only connect if texture has meaningful alpha data
+    from .texture_utils import has_meaningful_alpha
     op_s, alb_s = main_shader_node_instance.inputs.get("Opacity"), main_shader_node_instance.inputs.get("Albedo Color")
     if op_s and not op_s.is_linked and alb_s and alb_s.is_linked:
         alb_n = alb_s.links[0].from_node
-        if alb_n.type == 'TEX_IMAGE' and 'Alpha' in alb_n.outputs: links.new(alb_n.outputs['Alpha'], op_s)
+        if (alb_n.type == 'TEX_IMAGE' and 'Alpha' in alb_n.outputs and 
+            alb_n.image and has_meaningful_alpha(alb_n.image)): 
+            links.new(alb_n.outputs['Alpha'], op_s)
+            print(f"  Connected alpha from '{alb_n.image.name}' to opacity - texture has meaningful alpha data")
+        elif alb_n.type == 'TEX_IMAGE' and alb_n.image:
+            print(f"  Skipped alpha connection for '{alb_n.image.name}' - texture has uniform/no meaningful alpha data")
     em_c, em_i = main_shader_node_instance.inputs.get("Emissive Color"), main_shader_node_instance.inputs.get("Emissive Intensity")
     en_em = main_shader_node_instance.inputs.get("Enable Emission")
     usd_en_em = get_mod_input_value_util(shader_prim_instance, "inputs:enable_emission")

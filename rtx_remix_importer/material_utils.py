@@ -11,7 +11,7 @@ except ImportError:
 
 if USD_AVAILABLE:
     from .usd_utils import get_shader_from_material, get_input_value
-    from .texture_utils import load_texture, resolve_material_asset_path
+    from .texture_utils import load_texture, resolve_material_asset_path, has_meaningful_alpha
     from . import constants
     from .core_utils import set_material_blend_method_compatible
 
@@ -885,21 +885,19 @@ def process_pbr(shader, bl_material, shader_node, usd_file_path_context):
 
 
     # --- Alpha / Transparency Handling (for Aperture Opaque) ---
-    # This needs to be adapted based on how "Aperture Opaque" handles opacity/alpha.
-    # Assuming "Opacity" input on the group node.
+    # Only connect alpha to opacity if the texture actually has meaningful alpha data
     opacity_socket = shader_node.inputs.get("Opacity")
     albedo_socket = shader_node.inputs.get("Albedo Color") # Assuming "Albedo Color" is the new name
 
     if opacity_socket and not opacity_socket.is_linked and albedo_socket and albedo_socket.is_linked:
         albedo_node = albedo_socket.links[0].from_node
-        if albedo_node.type == 'TEX_IMAGE' and 'Alpha' in albedo_node.outputs:
-            # Connect Albedo Alpha to Opacity if Opacity is not already driven by an explicit map.
-            print(f"  Connecting Alpha from Albedo Color texture ('{albedo_node.image.name if albedo_node.image else 'Unknown'}') to Opacity input as a fallback.")
-            links.new(albedo_node.outputs['Alpha'], opacity_socket)
-            # Blend mode settings might be handled by properties on Aperture Opaque or material settings.
-            # For now, we'll assume the group node or explicit USD metadata handles blend modes.
-            # bl_material.blend_method = 'HASHED'
-            # bl_material.shadow_method = 'HASHED'
+        if albedo_node.type == 'TEX_IMAGE' and 'Alpha' in albedo_node.outputs and albedo_node.image:
+            # Check if the texture actually has meaningful alpha data
+            if has_meaningful_alpha(albedo_node.image):
+                print(f"  Connecting Alpha from Albedo Color texture ('{albedo_node.image.name}') to Opacity input - texture has meaningful alpha data.")
+                links.new(albedo_node.outputs['Alpha'], opacity_socket)
+            else:
+                print(f"  Skipping Alpha connection for Albedo Color texture ('{albedo_node.image.name}') - texture has uniform/no meaningful alpha data.")
 
     # --- Emission Strength (if "Enable Emission" is a property of the node group and is true) ---
     # This logic assumes "Emissive Color" and "Emissive Intensity" are inputs,
@@ -1160,7 +1158,7 @@ def apply_metadata_overrides(metadata, bl_material, shader_node):
     tex_color_op = metadata.get('textureColorOperation')
     tex_alpha_op = metadata.get('textureAlphaOperation')
 
-    # Example: If color op is MODULATE (4), insert a Mix node
+    # Example: If color op is MODULATE (4), connect texture directly without multiply node
     if tex_color_op == 4: # D3DTOP_MODULATE
         # Target "Albedo Color" on Aperture Opaque, or "Base Color" on Principled BSDF
         target_socket_name = "Albedo Color" if shader_node.type == 'GROUP' else "Base Color"
@@ -1169,15 +1167,9 @@ def apply_metadata_overrides(metadata, bl_material, shader_node):
         if color_socket and color_socket.is_linked:
             tex_node = color_socket.links[0].from_node
             if tex_node.type == 'TEX_IMAGE':
-                print(f"      Applying TextureColorOperation: MODULATE to '{target_socket_name}'")
-                original_color = color_socket.default_value[:]
-                mix_node = nodes.new(type='ShaderNodeMixRGB')
-                mix_node.blend_type = 'MULTIPLY'
-                mix_node.location = (shader_node.location.x - 200, shader_node.location.y + 100)
-                links.new(tex_node.outputs['Color'], mix_node.inputs['Color1'])
-                mix_node.inputs['Color2'].default_value = original_color
-                links.remove(color_socket.links[0])
-                links.new(mix_node.outputs['Color'], color_socket)
+                print(f"      TextureColorOperation: MODULATE detected for '{target_socket_name}' - using direct texture connection (no multiply node)")
+                # The texture is already connected directly, no additional processing needed
+                # RTX Remix materials handle modulation internally
 
     # --- Handle Alpha Operation --- #
     if tex_alpha_op == 1: # D3DTOP_SELECTARG1 (Use texture alpha)
@@ -1192,14 +1184,19 @@ def apply_metadata_overrides(metadata, bl_material, shader_node):
         if alpha_socket and not alpha_socket.is_linked and color_socket and color_socket.is_linked:
             incoming_node = color_socket.links[0].from_node
 
-            if incoming_node.type == 'TEX_IMAGE' and 'Alpha' in incoming_node.outputs:
-                print(f"      Applying TextureAlphaOperation: SELECTARG1 (Connecting Texture Alpha to '{alpha_target_socket_name}')")
-                links.new(incoming_node.outputs['Alpha'], alpha_socket)
-            elif incoming_node.type == 'MIX_RGB' and incoming_node.inputs['Color1'].is_linked: # Modulated color
-                tex_node = incoming_node.inputs['Color1'].links[0].from_node
-                if tex_node.type == 'TEX_IMAGE' and 'Alpha' in tex_node.outputs:
-                    print(f"      Applying TextureAlphaOperation: SELECTARG1 (Connecting Texture Alpha via Mix to '{alpha_target_socket_name}')")
-                    links.new(tex_node.outputs['Alpha'], alpha_socket)
+            if incoming_node.type == 'TEX_IMAGE' and 'Alpha' in incoming_node.outputs and incoming_node.image:
+                # Check if the texture actually has meaningful alpha data
+                if has_meaningful_alpha(incoming_node.image):
+                    print(f"      Applying TextureAlphaOperation: SELECTARG1 (Connecting Texture Alpha to '{alpha_target_socket_name}') - texture has meaningful alpha data")
+                    links.new(incoming_node.outputs['Alpha'], alpha_socket)
+                else:
+                    print(f"      Skipping TextureAlphaOperation: SELECTARG1 for '{alpha_target_socket_name}' - texture has uniform/no meaningful alpha data")
+            # Remove the mix node handling since we're not using multiply nodes anymore
+            # elif incoming_node.type == 'MIX_RGB' and incoming_node.inputs['Color1'].is_linked: # Modulated color
+            #     tex_node = incoming_node.inputs['Color1'].links[0].from_node
+            #     if tex_node.type == 'TEX_IMAGE' and 'Alpha' in tex_node.outputs:
+            #         print(f"      Applying TextureAlphaOperation: SELECTARG1 (Connecting Texture Alpha via Mix to '{alpha_target_socket_name}')")
+            #         links.new(tex_node.outputs['Alpha'], alpha_socket)
 
     # TODO: Handle other textureAlphaOp values
 

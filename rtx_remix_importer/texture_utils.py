@@ -313,3 +313,65 @@ def resolve_material_asset_path(file_path, usd_file_path_context=None):
     # If not found after all attempts
     print(f"    FAILURE: Could not resolve texture path: {original_file_path} relative to {usd_file_path_context}") # LOGGING
     return original_file_path # Return original path as fallback 
+
+def has_meaningful_alpha(image):
+    """
+    Check if a Blender image has meaningful alpha channel data.
+    
+    This function determines whether a texture's alpha channel contains useful transparency
+    information. It helps avoid connecting alpha to opacity for textures that don't actually
+    use transparency (e.g., textures with uniform alpha = 1.0).
+    
+    Returns True if the image has an alpha channel with non-uniform values,
+    False if the alpha is uniform (all 1.0 or all 0.0) or missing.
+    
+    Args:
+        image (bpy.types.Image): Blender image to check
+        
+    Returns:
+        bool: True if the image has meaningful alpha data
+    """
+    if not image or not image.pixels:
+        return False
+    
+    # Check if image has alpha channel
+    if image.channels < 4:
+        return False
+    
+    # For performance, sample a subset of pixels rather than the entire image
+    # This is especially important for large textures
+    pixels = image.pixels[:]
+    total_pixels = len(pixels) // 4  # Total number of RGBA pixels
+    
+    if total_pixels == 0:
+        return False
+    
+    # Sample strategy: take samples from different parts of the image
+    # For small images, sample all pixels; for large images, sample strategically
+    sample_count = min(total_pixels, 1000)  # Limit to 1000 samples for performance
+    step = max(1, total_pixels // sample_count)
+    
+    alpha_samples = []
+    for i in range(0, total_pixels, step):
+        alpha_index = i * 4 + 3  # Alpha channel index
+        if alpha_index < len(pixels):
+            alpha_samples.append(pixels[alpha_index])
+    
+    if not alpha_samples:
+        return False
+    
+    # Check if all alpha values are the same (uniform)
+    first_alpha = alpha_samples[0]
+    tolerance = 0.01  # Small tolerance for floating point comparison
+    
+    # Check for variation in alpha values
+    for alpha in alpha_samples[1:]:
+        if abs(alpha - first_alpha) > tolerance:
+            # Found variation, this image has meaningful alpha data
+            return True
+    
+    # All samples are uniform - check if it's meaningful
+    # If uniform and close to 1.0, it's likely opaque (no meaningful alpha)
+    # If uniform and close to 0.0, it's completely transparent (meaningful)
+    # If uniform and in between, it's semi-transparent (meaningful)
+    return abs(first_alpha) > tolerance and abs(first_alpha - 1.0) > tolerance 

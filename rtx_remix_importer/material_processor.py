@@ -293,9 +293,10 @@ class PBRProcessor:
     
     def _post_process_material(self, bl_material: bpy.types.Material, shader_node: bpy.types.Node):
         """Apply post-processing to the material."""
+        from .texture_utils import has_meaningful_alpha
         links = bl_material.node_tree.links
         
-        # Handle alpha transparency
+        # Handle alpha transparency - only connect if texture has meaningful alpha data
         opacity_socket = shader_node.inputs.get("Opacity")
         albedo_socket = shader_node.inputs.get("Albedo Color")
         
@@ -303,8 +304,12 @@ class PBRProcessor:
             albedo_socket and albedo_socket.is_linked):
             
             albedo_node = albedo_socket.links[0].from_node
-            if albedo_node.type == 'TEX_IMAGE' and 'Alpha' in albedo_node.outputs:
+            if (albedo_node.type == 'TEX_IMAGE' and 'Alpha' in albedo_node.outputs and 
+                albedo_node.image and has_meaningful_alpha(albedo_node.image)):
                 links.new(albedo_node.outputs['Alpha'], opacity_socket)
+                print(f"  Connected alpha from '{albedo_node.image.name}' to opacity - texture has meaningful alpha data")
+            elif albedo_node.type == 'TEX_IMAGE' and albedo_node.image:
+                print(f"  Skipped alpha connection for '{albedo_node.image.name}' - texture has uniform/no meaningful alpha data")
         
         # Handle emission intensity
         emissive_color_socket = shader_node.inputs.get("Emissive Color")
