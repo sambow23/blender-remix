@@ -114,66 +114,15 @@ class PT_RemixNodeGroupPanel(Panel):
     def draw(self, context):
         layout = self.layout
         
-        # Node group status
-        col = layout.column(align=True)
-        col.label(text="Available Node Groups:", icon='NODETREE')
-        
-        # Check which node groups exist
-        opaque_exists = "Aperture Opaque" in bpy.data.node_groups
-        translucent_exists = "Aperture Translucent" in bpy.data.node_groups
-        
-        row = col.row(align=True)
-        row.label(text="Aperture Opaque:")
-        row.label(text="✓" if opaque_exists else "✗", 
-                 icon='CHECKMARK' if opaque_exists else 'X')
-        
-        row = col.row(align=True)
-        row.label(text="Aperture Translucent:")
-        row.label(text="✓" if translucent_exists else "✗", 
-                 icon='CHECKMARK' if translucent_exists else 'X')
-        
         # Creation buttons
-        layout.separator()
         col = layout.column(align=True)
         col.label(text="Create Node Groups:", icon='ADD')
         
-        if not opaque_exists:
-            col.operator("material.create_aperture_node_group", 
-                        text="Create Aperture Opaque").node_group_type = 'OPAQUE'
+        col.operator("material.create_aperture_node_group", 
+                    text="Create Aperture Opaque").node_group_type = 'OPAQUE'
         
-        if not translucent_exists:
-            col.operator("material.create_aperture_node_group", 
-                        text="Create Aperture Translucent").node_group_type = 'TRANSLUCENT'
-        
-        # Force recreate options
-        if opaque_exists or translucent_exists:
-            layout.separator()
-            box = layout.box()
-            box.label(text="Force Recreate:", icon='FILE_REFRESH')
-            
-            col = box.column(align=True)
-            if opaque_exists:
-                op = col.operator("material.create_aperture_node_group", 
-                                text="Recreate Aperture Opaque")
-                op.node_group_type = 'OPAQUE'
-                op.force_recreate = True
-            
-            if translucent_exists:
-                op = col.operator("material.create_aperture_node_group", 
-                                text="Recreate Aperture Translucent")
-                op.node_group_type = 'TRANSLUCENT'
-                op.force_recreate = True
-        
-        # Usage instructions
-        layout.separator()
-        box = layout.box()
-        box.label(text="Usage:", icon='QUESTION')
-        col = box.column(align=True)
-        col.scale_y = 0.8
-        col.label(text="1. Select an object with materials")
-        col.label(text="2. Go to Material Properties")
-        col.label(text="3. Use conversion operators")
-        col.label(text="4. Edit node group parameters")
+        col.operator("material.create_aperture_node_group", 
+                    text="Create Aperture Translucent").node_group_type = 'TRANSLUCENT'
 
 
 # Operator properties panel for the create aperture node group operator
