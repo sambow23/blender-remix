@@ -464,8 +464,6 @@ class ApplyRemixModChanges(bpy.types.Operator):
                                 else:
                                     self.report({'DEBUG'}, f"No normals_data tuple for new mesh <{prim_path}>, calculating default.")
                                     calc_normals_split_compatible(bl_mesh_data) # Fallback if no USD normals
-
-                                # Removed the general TODO comment as it is now addressed by the detailed logic above.
                                 bl_mesh_data.validate(verbose=False) # Keep verbose=False to avoid console spam for valid meshes
                                 if bl_mesh_data.polygons: bl_mesh_data.polygons.foreach_set('use_smooth', [True] * len(bl_mesh_data.polygons))
                                 

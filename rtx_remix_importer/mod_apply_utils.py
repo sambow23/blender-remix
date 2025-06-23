@@ -6,6 +6,8 @@ import os
 import json
 import hashlib
 
+# Note: This has not been fully implemented and will most likely not work.
+
 # --- Transform Helper ---
 def get_blender_transform_matrix_from_mod(usd_prim_to_transform, current_xform_cache, is_y_up_in_mod, report_fn):
     try:

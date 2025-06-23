@@ -1,9 +1,9 @@
 bl_info = {
     "name": "Remix Toolkit for Blender",
     "author": "CR",
-    "version": (0, 1),
+    "version": (0, 3),
     "blender": (4, 0, 0),
-    "description": "A replacement to the official NVIDIA toolkit. Imports RTX Remix captures and export assets back in a NVIDIA Omniverse USD compatible format. Compatible with Blender 4.0+ including 4.4+.",
+    "description": "An alternative to the official NVIDIA RTX Remix Toolkit. Imports RTX Remix captures and export assets back in a RTX Remix compatible format.",
     "doc_url": "",
     "category": "Import-Export",
 }

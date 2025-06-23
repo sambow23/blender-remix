@@ -743,7 +743,8 @@ def export_light(operator, context, obj, sublayer_stage, project_root, target_su
     shaping_attrs = {}
     extent = None # Optional extent for area lights
 
-    intensity_scale = 1.0 # This may need to be adjusted to match Blender energy to USD intensity.
+    intensity_scale = 1.0 # This may need to be adjusted to match Blender energy to USD intensity. // Also the light radius heavily influences the intensity.
+                          # A blender sphere-light with a radius of 0.10 and an intensity of 10 W will directly match remix, but will differ going above or below that radius value.
 
     # Use strings for standard attribute names, often with "inputs:" prefix
     light_attrs["inputs:color"] = Gf.Vec3f(bl_light.color[:])
@@ -1190,7 +1191,6 @@ class ExportRemixAsset(Operator):
 
         # --- Apply All Transforms (Location, Rotation, Scale) ---
         # This fixes coordinate issues in-game by ensuring the mesh data has transforms baked in
-        # and results in clean transform values as shown in the user's image
         print(f"  DEBUG: remix_auto_apply_transforms setting: {context.scene.remix_auto_apply_transforms}")
         print(f"  DEBUG: Object type: {obj.type}")
         
@@ -1770,10 +1770,10 @@ class ExportRemixAsset(Operator):
              self.report({'WARNING'}, "No supported objects were exported to sublayer.")
              return {'CANCELLED'}
 
-# --- Export Operator (Directly to mod.usda File for Hotloading) ---
+# --- Export Operator (mod.usda, no sublayers) ---
 
 class ExportRemixModFile(Operator):
-    """Export selected Blender object(s) directly to the main mod.usda file (for potential hotloading)"""
+    """Export selected Blender object(s) directly to the main mod.usda file"""
     bl_idname = "export_scene.rtx_remix_mod_file"
     bl_label = "Export Selected to mod.usda (Hotload)"
     bl_options = {'REGISTER', 'UNDO'}

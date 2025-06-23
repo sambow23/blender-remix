@@ -80,8 +80,6 @@ def create_aperture_opaque_node_group():
     group_inputs.location = (-600, 0)
     group_outputs.location = (600, 0)
     
-    # For opaque materials, we'll create a simplified node group with basic PBR inputs
-    # This can be expanded later based on the actual AperturePBR_Opaque specification
     input_sockets = [
         ('NodeSocketColor', 'Base Color', (0.8, 0.8, 0.8, 1.0)),
         ('NodeSocketFloat', 'Metallic', 0.0, 0.0, 1.0),
@@ -248,9 +246,6 @@ def create_aperture_translucent_node_group():
     group_inputs.location = (-800, 0)
     group_outputs.location = (800, 0)
     
-    # Define input sockets with their types and default values
-    # Note: Using float sockets with 0.0/1.0 range for boolean-like behavior since NodeSocketBool isn't available in all Blender versions
-    # The boolean-like inputs are processed through ROUND math nodes to snap to clean 0.0/1.0 values
     input_sockets = [
         ('NodeSocketColor', 'Transmittance/Diffuse Albedo', (0.97, 0.97, 0.97, 1.0)),
         ('NodeSocketFloat', 'IOR', 1.3, 1.0, 3.0),
@@ -791,7 +786,6 @@ def process_pbr(shader, bl_material, shader_node, usd_file_path_context):
     else:
         # Input map for "Aperture Opaque" node group
         input_map = {
-            # From your export.json and common PBR:
             "Albedo Color": ["inputs:diffuse_texture", "diffuse_texture", "diffuse_color_constant"],
             "Opacity": ["inputs:opacity_texture", "opacity_texture", "opacity_constant", "inputs:opacity", "opacity"], # Added more specific opacity
             "Roughness": ["inputs:reflectionroughness_texture", "reflectionroughness_texture", "reflection_roughness_constant"],
@@ -803,12 +797,6 @@ def process_pbr(shader, bl_material, shader_node, usd_file_path_context):
             "Enable Emission": ["inputs:enable_emission"], # This might control visibility of other emission inputs
             "Emissive Color": ["inputs:emissive_mask_texture", "emissive_mask_texture", "emissive_color_constant"],
             "Emissive Intensity": ["inputs:emissive_intensity", "emissive_intensity"],
-
-            # Other potential direct mappings from export.json (if they are top-level inputs in the group)
-            # "Enable Iridescence": ["inputs:enable_iridescence"], # Example, if such an input exists
-            # "Thickness": ["inputs:thickness"], # Example
-            # "Inwards Displacement": ["inputs:inwards_displacement"], # Example for direct value
-            # "Outwards Displacement": ["inputs:outwards_displacement"], # Example for direct value
         }
 
     # Y position for texture nodes will be relative to the shader_node
@@ -943,12 +931,6 @@ def process_pbr(shader, bl_material, shader_node, usd_file_path_context):
     #         outwards_disp_socket.default_value = float(outwards_disp_val)
     # (Similar for "Inwards Displacement")
 
-
-# Remove or comment out old/unused processing functions
-# def setup_transparency(...): pass
-# def process_emissive_material(...): pass
-# def process_mdl_material(...): pass
-
 # --- New Main Function ---
 def get_or_create_instance_material(base_material_path, instance_metadata, usd_stage, usd_file_path_context, material_cache):
     """
@@ -1057,7 +1039,7 @@ def get_or_create_instance_material(base_material_path, instance_metadata, usd_s
     return final_bl_material
 
 
-# --- Refactored Base Material Creation ---
+# --- Base Material Creation ---
 def create_base_material_nodes(usd_material_path, usd_stage, usd_file_path_context):
     """
     Creates a Blender material with nodes based *only* on the USD material prim,
@@ -1148,19 +1130,12 @@ def apply_metadata_overrides(metadata, bl_material, shader_node):
         print(f"      Set blend_method=CLIP, shadow_method=CLIP, threshold={alpha_threshold:.3f}")
     else:
         set_material_blend_method_compatible(bl_material, 'OPAQUE', 'OPAQUE')
-        # print(f"      Set blend_method=OPAQUE, shadow_method=OPAQUE")
 
-    # --- Texture Operations (Example - Needs Refinement) --- #
-    # This part is complex and requires mapping Remix ops to Blender nodes
-    # Example: COLOR = TextureColor <OP> DiffuseColor
-    # Example: ALPHA = TextureAlpha <OP> DiffuseAlpha
 
     tex_color_op = metadata.get('textureColorOperation')
     tex_alpha_op = metadata.get('textureAlphaOperation')
 
-    # Example: If color op is MODULATE (4), connect texture directly without multiply node
-    if tex_color_op == 4: # D3DTOP_MODULATE
-        # Target "Albedo Color" on Aperture Opaque, or "Base Color" on Principled BSDF
+    if tex_color_op == 4:
         target_socket_name = "Albedo Color" if shader_node.type == 'GROUP' else "Base Color"
         color_socket = shader_node.inputs.get(target_socket_name)
 
@@ -1168,8 +1143,6 @@ def apply_metadata_overrides(metadata, bl_material, shader_node):
             tex_node = color_socket.links[0].from_node
             if tex_node.type == 'TEX_IMAGE':
                 print(f"      TextureColorOperation: MODULATE detected for '{target_socket_name}' - using direct texture connection (no multiply node)")
-                # The texture is already connected directly, no additional processing needed
-                # RTX Remix materials handle modulation internally
 
     # --- Handle Alpha Operation --- #
     if tex_alpha_op == 1: # D3DTOP_SELECTARG1 (Use texture alpha)
@@ -1191,15 +1164,6 @@ def apply_metadata_overrides(metadata, bl_material, shader_node):
                     links.new(incoming_node.outputs['Alpha'], alpha_socket)
                 else:
                     print(f"      Skipping TextureAlphaOperation: SELECTARG1 for '{alpha_target_socket_name}' - texture has uniform/no meaningful alpha data")
-            # Remove the mix node handling since we're not using multiply nodes anymore
-            # elif incoming_node.type == 'MIX_RGB' and incoming_node.inputs['Color1'].is_linked: # Modulated color
-            #     tex_node = incoming_node.inputs['Color1'].links[0].from_node
-            #     if tex_node.type == 'TEX_IMAGE' and 'Alpha' in tex_node.outputs:
-            #         print(f"      Applying TextureAlphaOperation: SELECTARG1 (Connecting Texture Alpha via Mix to '{alpha_target_socket_name}')")
-            #         links.new(tex_node.outputs['Alpha'], alpha_socket)
 
-    # TODO: Handle other textureAlphaOp values
 
-    # This might involve different Mix node types, Math nodes, or Separate/Combine RGBA nodes.
-    # Needs careful mapping based on DirectX texture stage states.
     print(f"      TODO: Implement handling for textureColorOp={tex_color_op}, textureAlphaOp={tex_alpha_op}")

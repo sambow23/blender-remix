@@ -1423,8 +1423,7 @@ def get_thumbnail_preview(capture_full_path):
 
 def cleanup_addon_resources():
     """Cleans up temporary files created by the addon."""
-    # Remove temporary thumbnail directory
-    # ... existing code ... 
+
 
 # Blender version compatibility functions
 def get_blender_version():
