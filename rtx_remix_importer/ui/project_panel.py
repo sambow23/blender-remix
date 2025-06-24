@@ -95,13 +95,13 @@ class PT_RemixProjectPanel(bpy.types.Panel):
             # Material Replacement Export to mod.usda
             row_material_mod = box_material_export.row()
             row_material_mod.enabled = bool(scene.remix_mod_file_path) # Only enable if project is loaded
-            material_mod_op = row_material_mod.operator("export_scene.rtx_remix_mod_file", text="Export Material Replacement to mod.usda", icon='FILE_REFRESH')
+            material_mod_op = row_material_mod.operator("export_scene.rtx_remix_mod_file", text="Export Selected to mod.usda", icon='FILE_REFRESH')
             material_mod_op.material_replacement_mode = True
             
             # Material Export to Active Sublayer
             row_material_sublayer = box_material_export.row()
             row_material_sublayer.enabled = bool(scene.remix_active_sublayer_path) 
-            material_sublayer_op = row_material_sublayer.operator("export_scene.rtx_remix_asset", text="Export Material Replacement to Active Sublayer", icon='MATERIAL')
+            material_sublayer_op = row_material_sublayer.operator("export_scene.rtx_remix_asset", text="Export Selected to Active Sublayer", icon='MATERIAL')
             material_sublayer_op.material_replacement_mode = True
             
             # --- Mesh/Light Exports Box ---
