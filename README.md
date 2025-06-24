@@ -1,8 +1,7 @@
 # Remix Toolkit for Blender
 ![image](https://github.com/user-attachments/assets/c20812f9-6efb-446a-9c86-e797bb90682e)
 
-A Blender addon for importing and exporting RTX Remix USD files.
-This can be used as a replacement to the official NVIDIA toolkit as it's able to import RTX Remix captures and export assets back in a NVIDIA Omniverse USD compatible format.
+A Blender addon that let's you import and export RTX Remix compatible assets.
 
 ## Requirements
 - A system running Windows (or use Wine on Linux)
@@ -30,17 +29,26 @@ This can be used as a replacement to the official NVIDIA toolkit as it's able to
 ### Import Captures
 - Use the **RTX Remix** panel in the 3D viewport sidebar (N-key)
 - Select your game's capture folder under `Captures > Capture Folder`
-- Import individual capture USD files or batch import multiple
+- Import individual capture USD files or batch import multiple using the checkboxes on the left side of the capture name
 
-### Project Management
-1. Load a RTX Remix project: Set the path to your `mod.usda` file
-2. Create or add sublayers for organizing your mod content
-3. Set target sublayer for exports
+### Asset Exports and Management
+#### Mod Management
+- Under `RTX Remix Project` > `Remix Mod File`, select an existing mod.usda or create a new one
 
-### Export Assets
-- Select objects in Blender
-- Use the export buttons in the RTX Remix panel
-- Assets are exported with the proper Remix material setup so they should work out of the box
+#### Sublayers
+- Under `RTX Remix Project` > `Sublayers`, select existing sublayer or create a new one
+
+#### Meshes and Lights
+1. Under `RTX Remix Project` > `Remix Anchor Target`. Select an anchor asset using the dropper icon (this would be an object in the game that has a stable hash)
+2. Import/create meshes and/or lights and place them anywhere in the capture
+3. Select the assets you're going to export, then press `Export selected` under `RTX Remix Project` > `Mesh & Light Exports`
+
+#### Materials
+1. Select a mesh you're going to replace the material with, then open the `Shader Editor`
+   - By default, RTX Remix materials will use the Aperture Opaque material, but this can be replaced with Principled BSDF if needed.
+2. If you want to use Aperture Opaque/Translucent, select `Create Aperture Opaque/Translucent` under `RTX Remix` on the sidebar inside the Shader Editor
+3. Connect material inputs/outputs as usual.
+4. When you're finished, press `Export selected` under `RTX Remix Project` > `Material Exports`
 
 ## Known Issues
 - Non-anchor mesh replacements are considered experimental and will have issues
