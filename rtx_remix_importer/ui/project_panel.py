@@ -108,10 +108,10 @@ class PT_RemixProjectPanel(bpy.types.Panel):
             box_mesh_export = layout.box()
             box_mesh_export.label(text="Mesh & Light Exports", icon='MESH_DATA')
             
-            # Hotload Export to mod.usda
+            # Export to mod.usda
             row_mesh_mod = box_mesh_export.row()
             row_mesh_mod.enabled = bool(scene.remix_mod_file_path) # Only enable if project is loaded
-            hotload_op = row_mesh_mod.operator("export_scene.rtx_remix_mod_file", text="Export Selected to mod.usda (Hotload)", icon='FILE_REFRESH')
+            hotload_op = row_mesh_mod.operator("export_scene.rtx_remix_mod_file", text="Export Selected to mod.usda", icon='FILE_REFRESH')
             hotload_op.material_replacement_mode = False  # Explicitly set to False to ensure full export
             
             # Mesh/Light Export to Active Sublayer

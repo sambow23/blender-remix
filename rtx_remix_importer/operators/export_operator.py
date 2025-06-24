@@ -1775,7 +1775,7 @@ class ExportRemixAsset(Operator):
 class ExportRemixModFile(Operator):
     """Export selected Blender object(s) directly to the main mod.usda file"""
     bl_idname = "export_scene.rtx_remix_mod_file"
-    bl_label = "Export Selected to mod.usda (Hotload)"
+    bl_label = "Export Selected to mod.usda"
     bl_options = {'REGISTER', 'UNDO'}
 
     material_replacement_mode: bpy.props.BoolProperty(
