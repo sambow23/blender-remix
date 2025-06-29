@@ -1,7 +1,7 @@
 bl_info = {
     "name": "RTX Remix Native Toolkit",
     "author": "You",
-    "version": (0, 1, 0),
+    "version": (0, 1, 1),
     "blender": (4, 1, 0),
     "description": "A native C++ powered addon for the RTX Remix workflow.",
     "category": "Import-Export",
@@ -71,11 +71,17 @@ class REMIX_OT_import_usd(bpy.types.Operator, ImportHelper):
         else:
             # Generate a user-friendly name for the mesh data block
             # e.g., "inst_ABC" -> "mesh_ABC"
-            mesh_name = object_name
-            if "inst_" in mesh_name:
-                mesh_name = mesh_name.replace("inst_", "mesh_")
+            mesh_name = object_name.replace("inst_", "mesh_")
 
-            mesh = bpy.data.meshes.new(name=mesh_name)
+            # Check if this user-friendly name already exists
+            if mesh_name in bpy.data.meshes:
+                mesh = bpy.data.meshes[mesh_name]
+                # Still, double-check if the path matches, just in case of non-unique names
+                if mesh.get("usd_path") != mesh_path:
+                     mesh = bpy.data.meshes.new(name=mesh_name)
+            else:
+                mesh = bpy.data.meshes.new(name=mesh_name)
+
             mesh["usd_path"] = mesh_path # Store unique path in a custom property
 
             # Process vertices
@@ -124,13 +130,21 @@ class REMIX_OT_import_usd(bpy.types.Operator, ImportHelper):
         if 'material' in mesh_data:
             mat_data = mesh_data['material']
             mat_path = mat_data['material_path']
+            mat_name = mat_data['name']
 
             # Find existing material by its unique path property
             material = None
-            for mat in bpy.data.materials:
-                if mat.get("usd_path") == mat_path:
-                    material = mat
-                    break
+            if mat_name in bpy.data.materials:
+                material = bpy.data.materials[mat_name]
+                if material.get("usd_path") != mat_path:
+                    # Name collision, but not the right material. Fallback to search.
+                    material = None
+            
+            if not material:
+                for mat in bpy.data.materials:
+                    if mat.get("usd_path") == mat_path:
+                        material = mat
+                        break
             
             if not material:
                 material = self.create_blender_material(mat_data)

@@ -13,6 +13,7 @@
 #include <pxr/base/vt/array.h>       // For VtArray
 #include <pxr/base/gf/vec3f.h>       // For GfVec3f
 #include <pxr/base/gf/vec2f.h>         // For UV coordinates
+#include <pxr/usd/usdGeom/imageable.h>      // For checking visibility
 #include <iostream>
 #include <vector>
 
@@ -51,6 +52,17 @@ static PyObject* import_usd(PyObject* self, PyObject* args) {
 
     // Traverse all prims in the stage
     for (const auto& prim : stage->Traverse()) {
+        // Skip prims that are not visible
+        pxr::UsdGeomImageable imageable(prim);
+        if (imageable.ComputeVisibility(pxr::UsdTimeCode::Default()) == pxr::TfToken("invisible")) {
+            continue;
+        }
+
+        // We only care about geometric primitives that can be rendered
+        if (!prim.IsA<pxr::UsdGeomGprim>()) {
+            continue;
+        }
+        
         // Skip abstract prims (definitions) and only process concrete prims (instances)
         if (prim.IsAbstract()) {
             continue;
