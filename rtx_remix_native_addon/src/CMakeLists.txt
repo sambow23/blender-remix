@@ -40,4 +40,5 @@ target_link_libraries(remix_native PRIVATE
 # Ensure the output file is placed where the addon can find it
 set_target_properties(remix_native PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/../"
+    PREFIX ""
 ) 
