@@ -142,7 +142,10 @@ class REMIX_OT_import_usd(bpy.types.Operator, ImportHelper):
                 material = self.create_blender_material(mat_data)
 
             if material:
-                obj.data.materials.append(material)
+                # Only add the material to the mesh's slots if it's not already there.
+                # This prevents duplicate slots on shared mesh data.
+                if material.name not in mesh.materials:
+                    mesh.materials.append(material)
 
     def create_blender_material(self, material_data):
         """Creates a new Blender material with a node tree based on texture data."""
