@@ -13,6 +13,7 @@ import os
 import platform
 import subprocess
 import shutil
+import concurrent.futures
 from bpy_extras.io_utils import ImportHelper
 from bpy.props import StringProperty
 
@@ -38,25 +39,80 @@ class REMIX_OT_import_usd(bpy.types.Operator, ImportHelper):
     )
 
     def execute(self, context):
-        if NATIVE_MODULE_LOADED:
-            print(f"Importing {self.filepath} with native module...")
-            # Call the C++ function
-            meshes_data = remix_native.import_usd(self.filepath)
-            
-            if not meshes_data:
-                self.report({'WARNING'}, "Native importer returned no mesh data.")
-                return {'CANCELLED'}
-
-            print(f"Native module returned data for {len(meshes_data)} meshes.")
-
-            # Create Blender objects
-            for mesh_data in meshes_data:
-                self.create_blender_mesh(mesh_data)
-        else:
+        if not NATIVE_MODULE_LOADED:
             self.report({'ERROR'}, "Native module is not loaded.")
             return {'CANCELLED'}
+
+        print("--- Starting Native USD Import ---")
+        meshes_data = remix_native.import_usd(self.filepath)
+        if not meshes_data:
+            self.report({'WARNING'}, "Native importer returned no data.")
+            return {'CANCELLED'}
+        print(f"Native module returned data for {len(meshes_data)} meshes.")
+
+        # --- Batch-convert all necessary textures using the native module ---
+        self.batch_convert_textures_native(meshes_data, self.filepath)
+
+        # --- Create Blender objects and materials ---
+        print("--- Creating Blender scene ---")
+        for mesh_data in meshes_data:
+            self.create_blender_mesh(mesh_data)
         
+        print("--- Native USD Import Finished ---")
         return {'FINISHED'}
+
+    def batch_convert_textures_native(self, meshes_data, usd_file_path):
+        """Finds all unique DDS files and calls the native module to convert them."""
+        print("--- Collecting textures for conversion ---")
+        dds_paths_to_convert = set()
+        
+        # Gather all unique texture paths
+        for mesh_data in meshes_data:
+            if 'material' in mesh_data:
+                textures = mesh_data['material'].get('textures', {})
+                for tex_path in textures.values():
+                    if tex_path.lower().endswith(".dds"):
+                        # Resolve the full, absolute path to the DDS file
+                        full_path = self.resolve_texture_path(tex_path, usd_file_path)
+                        if full_path and os.path.exists(full_path):
+                            # Check if the PNG already exists in the cache
+                            cached_png_path = self.get_cached_png_path(full_path)
+                            if not os.path.exists(cached_png_path):
+                                dds_paths_to_convert.add(full_path)
+
+        if not dds_paths_to_convert:
+            print("No new textures to convert.")
+            return
+        
+        print(f"Found {len(dds_paths_to_convert)} unique textures to convert...")
+        
+        texconv_path = self.get_texconv_path()
+        cache_dir = os.path.join(os.path.dirname(__file__), "texture_cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        
+        # Call the native C++ function to perform the conversion in parallel
+        remix_native.batch_convert_textures(list(dds_paths_to_convert), texconv_path, cache_dir)
+
+    def resolve_texture_path(self, tex_path, usd_file_path):
+        """Robustly resolves a texture path from the USD file."""
+        usd_dir = os.path.dirname(usd_file_path)
+        texture_path_unix = tex_path.replace("\\\\", "/").replace("\\", "/")
+        if texture_path_unix.startswith("../"):
+            texture_path_unix = texture_path_unix[3:]
+        return os.path.normpath(os.path.join(usd_dir, texture_path_unix))
+
+    def get_cached_png_path(self, dds_path):
+        """Calculates the final path for a cached PNG file from an absolute DDS path."""
+        addon_dir = os.path.dirname(__file__)
+        cache_dir = os.path.join(addon_dir, "texture_cache")
+        original_dds_filename = os.path.basename(dds_path)
+        png_filename = os.path.splitext(original_dds_filename)[0] + ".png"
+        return os.path.join(cache_dir, png_filename)
+
+    def get_texconv_path(self):
+        """Gets the path to the texconv executable."""
+        addon_dir = os.path.dirname(__file__)
+        return os.path.join(addon_dir, "bin", "texconv.exe")
 
     def create_blender_mesh(self, mesh_data):
         """Creates a Blender mesh object from the data returned by C++."""
@@ -151,77 +207,6 @@ class REMIX_OT_import_usd(bpy.types.Operator, ImportHelper):
                 if material.name not in mesh.materials:
                     mesh.materials.append(material)
 
-    def get_texconv_path(self):
-        """Gets the path to the texconv executable."""
-        addon_dir = os.path.dirname(__file__)
-        return os.path.join(addon_dir, "bin", "texconv.exe")
-
-    def convert_dds_to_png(self, dds_path, usd_file_path):
-        """Converts a DDS file to PNG using texconv, with caching."""
-        
-        # Robustly resolve the relative texture path from the USD file
-        usd_dir = os.path.dirname(usd_file_path)
-        # First, replace all backslashes with forward slashes for consistency
-        texture_path_unix = dds_path.replace("\\\\", "/").replace("\\", "/")
-        # If the path starts with a relative "up", remove it, as it's incorrect in captures.
-        if texture_path_unix.startswith("../"):
-            texture_path_unix = texture_path_unix[3:]
-        
-        # Then, join and normalize the path to resolve any remaining ".." components
-        absolute_path = os.path.normpath(os.path.join(usd_dir, texture_path_unix))
-
-        if not os.path.exists(absolute_path):
-            print(f"Error: DDS file not found at {absolute_path} (resolved from {dds_path})")
-            return None
-
-        addon_dir = os.path.dirname(__file__)
-        cache_dir = os.path.join(addon_dir, "texture_cache")
-        os.makedirs(cache_dir, exist_ok=True)
-        
-        # Sanitize the filename to make it safe for all OSes
-        safe_filename = "".join(c for c in os.path.basename(dds_path) if c.isalnum() or c in ('.', '_', '-')).rstrip()
-        png_path = os.path.join(cache_dir, f"{safe_filename}.png")
-
-        if os.path.exists(png_path):
-            print(f"Found cached PNG: {png_path}")
-            return png_path
-            
-        texconv_path = self.get_texconv_path()
-        if not os.path.exists(texconv_path):
-            self.report({'ERROR'}, f"texconv.exe not found at {texconv_path}")
-            return None
-
-        command = []
-        system = platform.system()
-        if system == "Windows":
-            command = [texconv_path, "-ft", "png", "-o", cache_dir, "-y", absolute_path]
-        elif system == "Linux":
-            if not shutil.which("wine"):
-                self.report({'ERROR'}, "Wine is not installed or not in PATH. Cannot run texconv.exe.")
-                return None
-            command = ["wine", texconv_path, "-ft", "png", "-o", cache_dir, "-y", absolute_path]
-        else:
-            self.report({'ERROR'}, f"Unsupported Operating System: {system}")
-            return None
-            
-        try:
-            print(f"Running command: {' '.join(command)}")
-            subprocess.run(command, check=True, capture_output=True, text=True)
-            # Find the actual output file name, as texconv might name it differently
-            expected_output_filename = os.path.splitext(os.path.basename(dds_path))[0] + ".png"
-            final_png_path = os.path.join(cache_dir, expected_output_filename)
-            if os.path.exists(final_png_path):
-                return final_png_path
-            else:
-                self.report({'ERROR'}, f"texconv finished but output PNG not found at {final_png_path}")
-                return None
-        except subprocess.CalledProcessError as e:
-            self.report({'ERROR'}, f"texconv failed: {e.stderr}")
-            return None
-        except Exception as e:
-            self.report({'ERROR'}, f"An unexpected error occurred during DDS conversion: {e}")
-            return None
-
     def create_blender_material(self, material_data):
         """Creates a new Blender material with a node tree based on texture data."""
         mat_path = material_data['material_path']
@@ -251,10 +236,12 @@ class REMIX_OT_import_usd(bpy.types.Operator, ImportHelper):
         for tex_type, tex_path in textures.items():
             final_tex_path = tex_path
             if tex_path.lower().endswith(".dds"):
-                print(f"Found DDS texture, attempting conversion: {tex_path}")
-                final_tex_path = self.convert_dds_to_png(tex_path, self.filepath)
-                if not final_tex_path:
-                    continue # Skip if conversion failed
+                # Resolve the original DDS path to find the correct cached PNG path
+                full_dds_path = self.resolve_texture_path(tex_path, self.filepath)
+                final_tex_path = self.get_cached_png_path(full_dds_path)
+                if not os.path.exists(final_tex_path):
+                    print(f"  > WARNING: Expected cached texture not found: {final_tex_path}")
+                    continue
             
             print(f"  > Loading texture '{tex_type}': {final_tex_path}")
             
@@ -268,7 +255,7 @@ class REMIX_OT_import_usd(bpy.types.Operator, ImportHelper):
                 continue
 
             # Connect to BSDF based on type
-            if tex_type == 'diffuseColor':
+            if tex_type == 'diffuse_texture' or tex_type == 'diffuseColor':
                 links.new(tex_node.outputs['Color'], bsdf.inputs['Base Color'])
             elif tex_type == 'normal':
                 normal_map_node = nodes.new(type='ShaderNodeNormalMap')

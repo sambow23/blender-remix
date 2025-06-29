@@ -16,6 +16,11 @@
 #include <pxr/usd/usdGeom/imageable.h>      // For checking visibility
 #include <iostream>
 #include <vector>
+#include <string>
+#include <thread>
+#include <algorithm>
+#include <cstdlib> // For system()
+#include <unistd.h> // for access()
 
 // Test function that will be callable from Python
 static PyObject* hello_world(PyObject* self, PyObject* args) {
@@ -234,10 +239,93 @@ static PyObject* import_usd(PyObject* self, PyObject* args) {
     return meshes_list;
 }
 
+// --- Helper for C++ Texture Conversion ---
+bool run_texconv_on_file(const std::string& texconv_path, const std::string& dds_path, const std::string& cache_dir) {
+    std::string command;
+    #ifdef _WIN32
+        command = "\"" + texconv_path + "\" -ft png -o \"" + cache_dir + "\" -y \"" + dds_path + "\"";
+    #else
+        if (system("which wine > /dev/null 2>&1") != 0) {
+            std::cerr << "ERROR: wine is not installed or not in PATH." << std::endl;
+            return false;
+        }
+        
+        // Convert Linux paths to Wine paths (e.g., /path/to/file -> Z:\path\to\file)
+        std::string wine_texconv_path = "Z:" + texconv_path;
+        std::string wine_dds_path = "Z:" + dds_path;
+        std::string wine_cache_dir = "Z:" + cache_dir;
+        
+        // Replace all forward slashes with backslashes for Windows compatibility
+        std::replace(wine_texconv_path.begin(), wine_texconv_path.end(), '/', '\\');
+        std::replace(wine_dds_path.begin(), wine_dds_path.end(), '/', '\\');
+        std::replace(wine_cache_dir.begin(), wine_cache_dir.end(), '/', '\\');
+
+        command = "wine \"" + wine_texconv_path + "\" -ft png -o \"" + wine_cache_dir + "\" -y \"" + wine_dds_path + "\"";
+    #endif
+    
+    std::cout << "  > Running: " << command << std::endl;
+    int result = system(command.c_str());
+    
+    if (result != 0) {
+        std::cerr << "  > ERROR: texconv command failed for " << dds_path << std::endl;
+        return false;
+    }
+    return true;
+}
+
+// --- New Native Function: Batch Texture Conversion ---
+static PyObject* batch_convert_textures_native(PyObject* self, PyObject* args) {
+    PyObject* dds_paths_list;
+    const char* texconv_path_char;
+    const char* cache_dir_char;
+
+    if (!PyArg_ParseTuple(args, "O!ss", &PyList_Type, &dds_paths_list, &texconv_path_char, &cache_dir_char)) {
+        return NULL;
+    }
+
+    std::string texconv_path(texconv_path_char);
+    std::string cache_dir(cache_dir_char);
+    std::vector<std::string> dds_paths;
+    for (Py_ssize_t i = 0; i < PyList_Size(dds_paths_list); ++i) {
+        PyObject* item = PyList_GetItem(dds_paths_list, i);
+        dds_paths.push_back(PyUnicode_AsUTF8(item));
+    }
+
+    std::cout << "--- Starting Native Texture Conversion (" << dds_paths.size() << " files) ---" << std::endl;
+
+    // --- Parallel Execution ---
+    unsigned int num_threads = std::thread::hardware_concurrency() * 4;
+    std::vector<std::thread> threads;
+    unsigned int files_per_thread = dds_paths.size() / num_threads;
+    if (files_per_thread == 0) files_per_thread = 1;
+
+    for (unsigned int i = 0; i < num_threads && i * files_per_thread < dds_paths.size(); ++i) {
+        threads.emplace_back([=] {
+            unsigned int start = i * files_per_thread;
+            unsigned int end = start + files_per_thread;
+            if (end > dds_paths.size()) end = dds_paths.size();
+            
+            for (unsigned int j = start; j < end; ++j) {
+                run_texconv_on_file(texconv_path, dds_paths[j], cache_dir);
+            }
+        });
+    }
+
+    for (auto& t : threads) {
+        if (t.joinable()) {
+            t.join();
+        }
+    }
+
+    std::cout << "--- Native Texture Conversion Finished ---" << std::endl;
+    Py_RETURN_NONE;
+}
+
 // Method definition object
 static PyMethodDef RemixNativeMethods[] = {
     {"hello", hello_world, METH_NOARGS, "Prints a hello message from C++ and tests USD."},
     {"import_usd", import_usd, METH_VARARGS, "Imports a USD file and returns mesh data."},
+    {"batch_convert_textures", batch_convert_textures_native, METH_VARARGS, "Converts a list of DDS files to PNG in parallel."},
     {NULL, NULL, 0, NULL}
 };
 
