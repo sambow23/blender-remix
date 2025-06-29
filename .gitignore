@@ -10,3 +10,4 @@ rtx_remix_importer/texconv/texconv.exe
 external/
 rtx_remix_native_addon/build/
 rtx_remix_native_addon/remix_native.so
+test_env/
