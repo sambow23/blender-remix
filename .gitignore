@@ -7,7 +7,7 @@ __pycache__/
 *.pyc
 *.pyo
 rtx_remix_importer/texconv/texconv.exe
-external/
+external/blender-4.4.3-linux-x64
 rtx_remix_native_addon/build/
 rtx_remix_native_addon/remix_native.so
 test_env/
