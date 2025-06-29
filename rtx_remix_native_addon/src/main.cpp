@@ -2,6 +2,9 @@
 #include <pxr/usd/usd/stage.h>
 #include <pxr/usd/usd/primRange.h> // For traversing prims
 #include <pxr/usd/usdGeom/gprim.h> // For checking if a prim is a geometric primitive
+#include <pxr/usd/usdGeom/mesh.h>      // For UsdGeomMesh
+#include <pxr/base/vt/array.h>       // For VtArray
+#include <pxr/base/gf/vec3f.h>       // For GfVec3f
 #include <iostream>
 #include <vector>
 
@@ -28,39 +31,69 @@ static PyObject* import_usd(PyObject* self, PyObject* args) {
     }
 
     std::cout << "C++: Opening USD file: " << filepath << std::endl;
+
     pxr::UsdStageRefPtr stage = pxr::UsdStage::Open(filepath);
-
     if (!stage) {
-        PyErr_SetString(PyExc_IOError, "Failed to open USD stage.");
-        return NULL;
+        // Return None if the stage could not be opened
+        Py_RETURN_NONE;
     }
+    
+    // This will be the list of mesh data dicts we return
+    PyObject* meshes_list = PyList_New(0);
 
-    PyObject* prim_list = PyList_New(0);
-
+    // Traverse all prims in the stage that are geometric meshes
     for (const auto& prim : stage->Traverse()) {
-        if (prim.IsA<pxr::UsdGeomGprim>()) {
-            PyObject* prim_info = PyDict_New();
-            
-            // Add name
-            std::string name = prim.GetName().GetString();
-            PyDict_SetItemString(prim_info, "name", PyUnicode_FromString(name.c_str()));
-
-            // Add type
-            std::string type = prim.GetTypeName().GetString();
-            PyDict_SetItemString(prim_info, "type", PyUnicode_FromString(type.c_str()));
-
-            PyList_Append(prim_list, prim_info);
-            Py_DECREF(prim_info);
+        if (!prim.IsA<pxr::UsdGeomMesh>()) {
+            continue;
         }
+
+        pxr::UsdGeomMesh mesh(prim);
+        PyObject* mesh_dict = PyDict_New();
+
+        // --- Name ---
+        PyDict_SetItemString(mesh_dict, "name", PyUnicode_FromString(prim.GetName().GetText()));
+
+        // --- Vertices ---
+        pxr::VtArray<pxr::GfVec3f> points;
+        mesh.GetPointsAttr().Get(&points);
+        PyObject* vertices_list = PyList_New(points.size() * 3);
+        for (size_t i = 0; i < points.size(); ++i) {
+            PyList_SET_ITEM(vertices_list, i * 3 + 0, PyFloat_FromDouble(points[i][0]));
+            PyList_SET_ITEM(vertices_list, i * 3 + 1, PyFloat_FromDouble(points[i][1]));
+            PyList_SET_ITEM(vertices_list, i * 3 + 2, PyFloat_FromDouble(points[i][2]));
+        }
+        PyDict_SetItemString(mesh_dict, "vertices", vertices_list);
+
+        // --- Face Vertex Counts ---
+        pxr::VtArray<int> face_counts;
+        mesh.GetFaceVertexCountsAttr().Get(&face_counts);
+        PyObject* counts_list = PyList_New(face_counts.size());
+        for (size_t i = 0; i < face_counts.size(); ++i) {
+            PyList_SET_ITEM(counts_list, i, PyLong_FromLong(face_counts[i]));
+        }
+        PyDict_SetItemString(mesh_dict, "face_vertex_counts", counts_list);
+
+        // --- Face Vertex Indices ---
+        pxr::VtArray<int> face_indices;
+        mesh.GetFaceVertexIndicesAttr().Get(&face_indices);
+        PyObject* indices_list = PyList_New(face_indices.size());
+        for (size_t i = 0; i < face_indices.size(); ++i) {
+            PyList_SET_ITEM(indices_list, i, PyLong_FromLong(face_indices[i]));
+        }
+        PyDict_SetItemString(mesh_dict, "face_vertex_indices", indices_list);
+        
+        // Add the dict to our main list
+        PyList_Append(meshes_list, mesh_dict);
+        Py_DECREF(mesh_dict);
     }
 
-    return prim_list;
+    return meshes_list;
 }
 
 // Method definition object
 static PyMethodDef RemixNativeMethods[] = {
     {"hello", hello_world, METH_NOARGS, "Prints a hello message from C++ and tests USD."},
-    {"import_usd", import_usd, METH_VARARGS, "Imports a USD file and returns a list of its geometric prims."},
+    {"import_usd", import_usd, METH_VARARGS, "Imports a USD file and returns mesh data."},
     {NULL, NULL, 0, NULL}
 };
 

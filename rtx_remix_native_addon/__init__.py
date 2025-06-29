@@ -33,31 +33,56 @@ class REMIX_OT_import_usd(bpy.types.Operator, ImportHelper):
     )
 
     def execute(self, context):
-        if not NATIVE_MODULE_LOADED:
+        if NATIVE_MODULE_LOADED:
+            print(f"Importing {self.filepath} with native module...")
+            # Call the C++ function
+            meshes_data = remix_native.import_usd(self.filepath)
+            
+            if not meshes_data:
+                self.report({'WARNING'}, "Native importer returned no mesh data.")
+                return {'CANCELLED'}
+
+            print(f"Native module returned data for {len(meshes_data)} meshes.")
+
+            # Create Blender objects
+            for mesh_data in meshes_data:
+                self.create_blender_mesh(mesh_data)
+        else:
             self.report({'ERROR'}, "Native module is not loaded.")
             return {'CANCELLED'}
-
-        print(f"Python: Passing filepath '{self.filepath}' to C++ module.")
         
-        try:
-            prim_data = remix_native.import_usd(self.filepath)
-            
-            print("\n--- Prims returned from C++ ---")
-            if not prim_data:
-                print("No geometric prims found.")
-            else:
-                for item in prim_data:
-                    print(f"  Name: {item['name']}, Type: {item['type']}")
-            print("-----------------------------\n")
-
-            self.report({'INFO'}, f"Successfully processed USD. See console for details.")
-
-        except Exception as e:
-            self.report({'ERROR'}, f"C++ module failed: {e}")
-            return {'CANCELLED'}
-
         return {'FINISHED'}
 
+    def create_blender_mesh(self, mesh_data):
+        """Creates a Blender mesh object from the data returned by C++."""
+        name = mesh_data['name']
+        
+        # Process vertices
+        flat_verts = mesh_data['vertices']
+        vertices = [tuple(flat_verts[i:i+3]) for i in range(0, len(flat_verts), 3)]
+
+        # Process faces
+        face_indices = mesh_data['face_vertex_indices']
+        face_counts = mesh_data['face_vertex_counts']
+        
+        faces = []
+        current_index = 0
+        for count in face_counts:
+            faces.append(tuple(face_indices[current_index : current_index + count]))
+            current_index += count
+
+        # Create mesh and object
+        mesh = bpy.data.meshes.new(name=name)
+        obj = bpy.data.objects.new(name, mesh)
+
+        print(f"Creating mesh '{name}' with {len(vertices)} vertices and {len(faces)} faces.")
+
+        # Populate mesh with data
+        mesh.from_pydata(vertices, [], faces)
+        mesh.update()
+
+        # Link object to scene
+        bpy.context.collection.objects.link(obj)
 
 # --- Blender UI Panel ---
 class REMIX_PT_native_panel(bpy.types.Panel):
