@@ -1,9 +1,15 @@
 #include <Python.h>
 #include <pxr/usd/usd/stage.h>
 #include <pxr/usd/usd/primRange.h> // For traversing prims
+#include <pxr/usd/usd/timeCode.h>            // For UsdTimeCode
 #include <pxr/usd/usdGeom/gprim.h> // For checking if a prim is a geometric primitive
 #include <pxr/usd/usdGeom/mesh.h>      // For UsdGeomMesh
 #include <pxr/usd/usdGeom/primvarsAPI.h> // For reading primvars like UVs
+#include <pxr/usd/usdGeom/xformable.h>       // For getting transforms
+#include <pxr/usd/usdShade/materialBindingAPI.h> // For material bindings
+#include <pxr/usd/usdShade/material.h>        // For materials
+#include <pxr/usd/usdShade/shader.h>          // For shader nodes
+#include <pxr/usd/sdf/assetPath.h>            // For texture asset paths
 #include <pxr/base/vt/array.h>       // For VtArray
 #include <pxr/base/gf/vec3f.h>       // For GfVec3f
 #include <pxr/base/gf/vec2f.h>         // For UV coordinates
@@ -43,14 +49,32 @@ static PyObject* import_usd(PyObject* self, PyObject* args) {
     // This will be the list of mesh data dicts we return
     PyObject* meshes_list = PyList_New(0);
 
-    // Traverse all prims in the stage that are geometric meshes
+    // Traverse all prims in the stage
     for (const auto& prim : stage->Traverse()) {
+        // Skip abstract prims (definitions) and only process concrete prims (instances)
+        if (prim.IsAbstract()) {
+            continue;
+        }
+
         if (!prim.IsA<pxr::UsdGeomMesh>()) {
             continue;
         }
 
         pxr::UsdGeomMesh mesh(prim);
         PyObject* mesh_dict = PyDict_New();
+
+        // --- Transform ---
+        pxr::UsdGeomXformable xformable(prim);
+        pxr::GfMatrix4d transform = xformable.ComputeLocalToWorldTransform(pxr::UsdTimeCode::Default());
+        PyObject* transform_list = PyList_New(16);
+        const double* matrix_data = transform.GetArray();
+        for (int i = 0; i < 16; ++i) {
+            PyList_SET_ITEM(transform_list, i, PyFloat_FromDouble(matrix_data[i]));
+        }
+        PyDict_SetItemString(mesh_dict, "transform", transform_list);
+
+        // --- Paths as Hashes ---
+        PyDict_SetItemString(mesh_dict, "mesh_path", PyUnicode_FromString(prim.GetPath().GetText()));
 
         // --- Name ---
         PyDict_SetItemString(mesh_dict, "name", PyUnicode_FromString(prim.GetName().GetText()));
@@ -104,6 +128,46 @@ static PyObject* import_usd(PyObject* self, PyObject* args) {
             }
         }
         
+        // --- Material and Textures ---
+        pxr::UsdShadeMaterialBindingAPI bindingAPI(prim);
+        pxr::UsdShadeMaterial material = bindingAPI.ComputeBoundMaterial();
+        if (material) {
+            PyObject* material_dict = PyDict_New();
+            // Use the material's path as its unique ID
+            PyDict_SetItemString(material_dict, "material_path", PyUnicode_FromString(material.GetPrim().GetPath().GetText()));
+            PyDict_SetItemString(material_dict, "name", PyUnicode_FromString(material.GetPrim().GetName().GetText()));
+
+            PyObject* textures_dict = PyDict_New();
+            
+            // We assume the material contains a UsdPreviewSurface shader
+            pxr::UsdShadeShader surfaceShader = material.ComputeSurfaceSource();
+            if(surfaceShader) {
+                // Iterate over the inputs of the shader to find texture connections
+                for (const pxr::UsdShadeInput& input : surfaceShader.GetInputs()) {
+                    pxr::UsdShadeConnectableAPI source;
+                    pxr::TfToken sourceName;
+                    pxr::UsdShadeAttributeType sourceType;
+                    if (input.GetConnectedSource(&source, &sourceName, &sourceType)) {
+                        // Check if the connected source is a texture shader
+                        pxr::UsdShadeShader textureShader(source.GetPrim());
+                        if (textureShader) {
+                            pxr::UsdShadeInput fileInput = textureShader.GetInput(pxr::TfToken("file"));
+                            pxr::SdfAssetPath assetPath;
+                            if (fileInput.Get(&assetPath)) {
+                                std::string texture_path = assetPath.GetResolvedPath();
+                                if (texture_path.empty()){
+                                    texture_path = assetPath.GetAssetPath();
+                                }
+                                PyDict_SetItemString(textures_dict, input.GetBaseName().GetText(), PyUnicode_FromString(texture_path.c_str()));
+                            }
+                        }
+                    }
+                }
+            }
+            PyDict_SetItemString(material_dict, "textures", textures_dict);
+            PyDict_SetItemString(mesh_dict, "material", material_dict);
+        }
+
         // Add the dict to our main list
         PyList_Append(meshes_list, mesh_dict);
         Py_DECREF(mesh_dict);

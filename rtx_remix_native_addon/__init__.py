@@ -8,6 +8,7 @@ bl_info = {
 }
 
 import bpy
+import mathutils # Import mathutils for matrix operations
 from bpy_extras.io_utils import ImportHelper
 from bpy.props import StringProperty
 
@@ -55,38 +56,147 @@ class REMIX_OT_import_usd(bpy.types.Operator, ImportHelper):
 
     def create_blender_mesh(self, mesh_data):
         """Creates a Blender mesh object from the data returned by C++."""
-        name = mesh_data['name']
+        mesh_path = mesh_data['mesh_path']
+        object_name = mesh_data['name']
+
+        # --- Check for existing mesh data using its unique path ---
+        mesh = None
+        for m in bpy.data.meshes:
+            if m.get("usd_path") == mesh_path:
+                mesh = m
+                break
         
-        # Process vertices
-        flat_verts = mesh_data['vertices']
-        vertices = [tuple(flat_verts[i:i+3]) for i in range(0, len(flat_verts), 3)]
+        if mesh:
+            print(f"Reusing existing mesh data for path: {mesh_path}")
+        else:
+            # Generate a user-friendly name for the mesh data block
+            # e.g., "inst_ABC" -> "mesh_ABC"
+            mesh_name = object_name
+            if "inst_" in mesh_name:
+                mesh_name = mesh_name.replace("inst_", "mesh_")
 
-        # Process faces
-        face_indices = mesh_data['face_vertex_indices']
-        face_counts = mesh_data['face_vertex_counts']
-        
-        faces = []
-        current_index = 0
-        for count in face_counts:
-            faces.append(tuple(face_indices[current_index : current_index + count]))
-            current_index += count
+            mesh = bpy.data.meshes.new(name=mesh_name)
+            mesh["usd_path"] = mesh_path # Store unique path in a custom property
 
-        # Create mesh and object
-        mesh = bpy.data.meshes.new(name=name)
-        obj = bpy.data.objects.new(name, mesh)
+            # Process vertices
+            flat_verts = mesh_data['vertices']
+            vertices = [tuple(flat_verts[i:i+3]) for i in range(0, len(flat_verts), 3)]
 
-        print(f"Creating mesh '{name}' with {len(vertices)} vertices and {len(faces)} faces.")
+            # Process faces
+            face_indices = mesh_data['face_vertex_indices']
+            face_counts = mesh_data['face_vertex_counts']
+            
+            faces = []
+            current_index = 0
+            for count in face_counts:
+                faces.append(tuple(face_indices[current_index : current_index + count]))
+                current_index += count
+            
+            # Populate mesh with data
+            mesh.from_pydata(vertices, [], faces)
+            mesh.update()
 
-        # Populate mesh with data
-        mesh.from_pydata(vertices, [], faces)
-        mesh.update()
+            # --- Apply UVs ---
+            if 'uvs' in mesh_data:
+                self.apply_uvs(mesh, mesh_data)
 
-        # --- Apply UVs ---
-        if 'uvs' in mesh_data:
-            self.apply_uvs(mesh, mesh_data)
+        # Create a new object for this instance
+        obj = bpy.data.objects.new(object_name, mesh)
+        obj["usd_path"] = mesh_path
+
+        # Apply the transform
+        if 'transform' in mesh_data:
+            flat_matrix = mesh_data['transform']
+            matrix = mathutils.Matrix([
+                flat_matrix[0:4],
+                flat_matrix[4:8],
+                flat_matrix[8:12],
+                flat_matrix[12:16]
+            ])
+            # Transpose from USD's row-major to Blender's column-major
+            matrix.transpose()
+            obj.matrix_world = matrix
 
         # Link object to scene
         bpy.context.collection.objects.link(obj)
+
+        # --- Assign Material ---
+        if 'material' in mesh_data:
+            mat_data = mesh_data['material']
+            mat_path = mat_data['material_path']
+
+            # Find existing material by its unique path property
+            material = None
+            for mat in bpy.data.materials:
+                if mat.get("usd_path") == mat_path:
+                    material = mat
+                    break
+            
+            if not material:
+                material = self.create_blender_material(mat_data)
+
+            if material:
+                obj.data.materials.append(material)
+
+    def create_blender_material(self, material_data):
+        """Creates a new Blender material with a node tree based on texture data."""
+        mat_path = material_data['material_path']
+        name = material_data['name'] # This is the clean name, e.g. "mat_..."
+        print(f"Creating material '{name}' ({mat_path})...")
+        
+        material = bpy.data.materials.new(name=name)
+        material["usd_path"] = mat_path # Store unique path in a custom property
+        material.use_nodes = True
+        nodes = material.node_tree.nodes
+        links = material.node_tree.links
+        
+        # Clear default nodes
+        for node in nodes:
+            nodes.remove(node)
+            
+        # Add Principled BSDF and Output nodes
+        bsdf = nodes.new(type='ShaderNodeBsdfPrincipled')
+        output = nodes.new(type='ShaderNodeOutputMaterial')
+        bsdf.location = (0, 0)
+        output.location = (300, 0)
+        links.new(bsdf.outputs['BSDF'], output.inputs['Surface'])
+
+        # Create and connect texture nodes
+        textures = material_data['textures']
+        node_pos_y = 300
+        for tex_type, tex_path in textures.items():
+            print(f"  > Found texture '{tex_type}': {tex_path}")
+            
+            tex_node = nodes.new(type='ShaderNodeTexImage')
+            tex_node.location = (-300, node_pos_y)
+            
+            try:
+                tex_node.image = bpy.data.images.load(tex_path, check_existing=True)
+            except Exception as e:
+                print(f"    ! Could not load image: {e}")
+                continue
+
+            # Connect to BSDF based on type
+            if tex_type == 'diffuseColor':
+                links.new(tex_node.outputs['Color'], bsdf.inputs['Base Color'])
+            elif tex_type == 'normal':
+                normal_map_node = nodes.new(type='ShaderNodeNormalMap')
+                normal_map_node.location = (-100, node_pos_y)
+                links.new(tex_node.outputs['Color'], normal_map_node.inputs['Color'])
+                links.new(normal_map_node.outputs['Normal'], bsdf.inputs['Normal'])
+                tex_node.image.colorspace_settings.name = 'Non-Color'
+            elif tex_type == 'roughness':
+                links.new(tex_node.outputs['Color'], bsdf.inputs['Roughness'])
+                tex_node.image.colorspace_settings.name = 'Non-Color'
+            elif tex_type == 'metallic':
+                links.new(tex_node.outputs['Color'], bsdf.inputs['Metallic'])
+                tex_node.image.colorspace_settings.name = 'Non-Color'
+            elif tex_type == 'emissive_color':
+                 links.new(tex_node.outputs['Color'], bsdf.inputs['Emission'])
+            
+            node_pos_y -= 350
+            
+        return material
 
     def apply_uvs(self, mesh, mesh_data):
         """Applies UV data to a Blender mesh."""
