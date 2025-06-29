@@ -9,6 +9,10 @@ bl_info = {
 
 import bpy
 import mathutils # Import mathutils for matrix operations
+import os
+import platform
+import subprocess
+import shutil
 from bpy_extras.io_utils import ImportHelper
 from bpy.props import StringProperty
 
@@ -147,6 +151,77 @@ class REMIX_OT_import_usd(bpy.types.Operator, ImportHelper):
                 if material.name not in mesh.materials:
                     mesh.materials.append(material)
 
+    def get_texconv_path(self):
+        """Gets the path to the texconv executable."""
+        addon_dir = os.path.dirname(__file__)
+        return os.path.join(addon_dir, "bin", "texconv.exe")
+
+    def convert_dds_to_png(self, dds_path, usd_file_path):
+        """Converts a DDS file to PNG using texconv, with caching."""
+        
+        # Robustly resolve the relative texture path from the USD file
+        usd_dir = os.path.dirname(usd_file_path)
+        # First, replace all backslashes with forward slashes for consistency
+        texture_path_unix = dds_path.replace("\\\\", "/").replace("\\", "/")
+        # If the path starts with a relative "up", remove it, as it's incorrect in captures.
+        if texture_path_unix.startswith("../"):
+            texture_path_unix = texture_path_unix[3:]
+        
+        # Then, join and normalize the path to resolve any remaining ".." components
+        absolute_path = os.path.normpath(os.path.join(usd_dir, texture_path_unix))
+
+        if not os.path.exists(absolute_path):
+            print(f"Error: DDS file not found at {absolute_path} (resolved from {dds_path})")
+            return None
+
+        addon_dir = os.path.dirname(__file__)
+        cache_dir = os.path.join(addon_dir, "texture_cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        
+        # Sanitize the filename to make it safe for all OSes
+        safe_filename = "".join(c for c in os.path.basename(dds_path) if c.isalnum() or c in ('.', '_', '-')).rstrip()
+        png_path = os.path.join(cache_dir, f"{safe_filename}.png")
+
+        if os.path.exists(png_path):
+            print(f"Found cached PNG: {png_path}")
+            return png_path
+            
+        texconv_path = self.get_texconv_path()
+        if not os.path.exists(texconv_path):
+            self.report({'ERROR'}, f"texconv.exe not found at {texconv_path}")
+            return None
+
+        command = []
+        system = platform.system()
+        if system == "Windows":
+            command = [texconv_path, "-ft", "png", "-o", cache_dir, "-y", absolute_path]
+        elif system == "Linux":
+            if not shutil.which("wine"):
+                self.report({'ERROR'}, "Wine is not installed or not in PATH. Cannot run texconv.exe.")
+                return None
+            command = ["wine", texconv_path, "-ft", "png", "-o", cache_dir, "-y", absolute_path]
+        else:
+            self.report({'ERROR'}, f"Unsupported Operating System: {system}")
+            return None
+            
+        try:
+            print(f"Running command: {' '.join(command)}")
+            subprocess.run(command, check=True, capture_output=True, text=True)
+            # Find the actual output file name, as texconv might name it differently
+            expected_output_filename = os.path.splitext(os.path.basename(dds_path))[0] + ".png"
+            final_png_path = os.path.join(cache_dir, expected_output_filename)
+            if os.path.exists(final_png_path):
+                return final_png_path
+            else:
+                self.report({'ERROR'}, f"texconv finished but output PNG not found at {final_png_path}")
+                return None
+        except subprocess.CalledProcessError as e:
+            self.report({'ERROR'}, f"texconv failed: {e.stderr}")
+            return None
+        except Exception as e:
+            self.report({'ERROR'}, f"An unexpected error occurred during DDS conversion: {e}")
+            return None
+
     def create_blender_material(self, material_data):
         """Creates a new Blender material with a node tree based on texture data."""
         mat_path = material_data['material_path']
@@ -171,16 +246,23 @@ class REMIX_OT_import_usd(bpy.types.Operator, ImportHelper):
         links.new(bsdf.outputs['BSDF'], output.inputs['Surface'])
 
         # Create and connect texture nodes
-        textures = material_data['textures']
+        textures = material_data.get('textures', {})
         node_pos_y = 300
         for tex_type, tex_path in textures.items():
-            print(f"  > Found texture '{tex_type}': {tex_path}")
+            final_tex_path = tex_path
+            if tex_path.lower().endswith(".dds"):
+                print(f"Found DDS texture, attempting conversion: {tex_path}")
+                final_tex_path = self.convert_dds_to_png(tex_path, self.filepath)
+                if not final_tex_path:
+                    continue # Skip if conversion failed
+            
+            print(f"  > Loading texture '{tex_type}': {final_tex_path}")
             
             tex_node = nodes.new(type='ShaderNodeTexImage')
             tex_node.location = (-300, node_pos_y)
             
             try:
-                tex_node.image = bpy.data.images.load(tex_path, check_existing=True)
+                tex_node.image = bpy.data.images.load(final_tex_path, check_existing=True)
             except Exception as e:
                 print(f"    ! Could not load image: {e}")
                 continue

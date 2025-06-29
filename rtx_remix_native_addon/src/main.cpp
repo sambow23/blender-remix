@@ -158,6 +158,7 @@ static PyObject* import_usd(PyObject* self, PyObject* args) {
         pxr::UsdShadeMaterialBindingAPI bindingAPI(prim);
         pxr::UsdShadeMaterial material = bindingAPI.ComputeBoundMaterial();
         if (material) {
+            std::cout << "  > Found material: " << material.GetPrim().GetPath() << std::endl;
             PyObject* material_dict = PyDict_New();
             // Use the material's path as its unique ID
             PyDict_SetItemString(material_dict, "material_path", PyUnicode_FromString(material.GetPrim().GetPath().GetText()));
@@ -165,30 +166,61 @@ static PyObject* import_usd(PyObject* self, PyObject* args) {
 
             PyObject* textures_dict = PyDict_New();
             
-            // We assume the material contains a UsdPreviewSurface shader
-            pxr::UsdShadeShader surfaceShader = material.ComputeSurfaceSource();
-            if(surfaceShader) {
-                // Iterate over the inputs of the shader to find texture connections
-                for (const pxr::UsdShadeInput& input : surfaceShader.GetInputs()) {
-                    pxr::UsdShadeConnectableAPI source;
-                    pxr::TfToken sourceName;
-                    pxr::UsdShadeAttributeType sourceType;
-                    if (input.GetConnectedSource(&source, &sourceName, &sourceType)) {
-                        // Check if the connected source is a texture shader
-                        pxr::UsdShadeShader textureShader(source.GetPrim());
-                        if (textureShader) {
-                            pxr::UsdShadeInput fileInput = textureShader.GetInput(pxr::TfToken("file"));
+            // Explicitly look for the MDL surface output, which is more reliable for Remix captures
+            pxr::UsdShadeOutput surfaceOutput = material.GetOutput(pxr::TfToken("mdl:surface"));
+            if (surfaceOutput) {
+                pxr::UsdShadeConnectableAPI source;
+                pxr::TfToken sourceName;
+                pxr::UsdShadeAttributeType sourceType;
+
+                if (surfaceOutput.GetConnectedSource(&source, &sourceName, &sourceType)) {
+                    pxr::UsdShadeShader surfaceShader(source.GetPrim());
+                    if (surfaceShader) {
+                         std::cout << "    > Found surface shader via mdl:surface: " << surfaceShader.GetPrim().GetPath() << std::endl;
+                        // Iterate over the inputs of the shader to find texture connections
+                        for (const pxr::UsdShadeInput& input : surfaceShader.GetInputs()) {
+                            std::cout << "      - Checking input: " << input.GetBaseName() << std::endl;
+                            
                             pxr::SdfAssetPath assetPath;
-                            if (fileInput.Get(&assetPath)) {
+                            bool found_texture = false;
+
+                            // First, try to see if the input is connected to a texture shader
+                            pxr::UsdShadeConnectableAPI textureSource;
+                            pxr::TfToken textureSourceName;
+                            pxr::UsdShadeAttributeType textureSourceType;
+                            if (input.GetConnectedSource(&textureSource, &textureSourceName, &textureSourceType)) {
+                                pxr::UsdShadeShader textureShader(textureSource.GetPrim());
+                                if (textureShader) {
+                                    std::cout << "        > Connected to texture shader: " << textureShader.GetPrim().GetPath() << std::endl;
+                                    pxr::UsdShadeInput fileInput = textureShader.GetInput(pxr::TfToken("file"));
+                                    if (fileInput && fileInput.Get(&assetPath)) {
+                                        found_texture = true;
+                                    }
+                                }
+                            }
+                            
+                            // If not connected, check if the input itself holds the texture path
+                            if (!found_texture) {
+                                if (input.Get(&assetPath)) {
+                                    std::cout << "        > Found asset path directly on input." << std::endl;
+                                    found_texture = true;
+                                }
+                            }
+
+                            if (found_texture) {
+                                std::cout << "          > Found asset path: " << assetPath.GetAssetPath() << std::endl;
                                 std::string texture_path = assetPath.GetResolvedPath();
                                 if (texture_path.empty()){
                                     texture_path = assetPath.GetAssetPath();
                                 }
+                                std::cout << "          > Resolved texture path: " << texture_path << std::endl;
                                 PyDict_SetItemString(textures_dict, input.GetBaseName().GetText(), PyUnicode_FromString(texture_path.c_str()));
                             }
                         }
                     }
                 }
+            } else {
+                std::cout << "    > No 'mdl:surface' output found for material." << std::endl;
             }
             PyDict_SetItemString(material_dict, "textures", textures_dict);
             PyDict_SetItemString(mesh_dict, "material", material_dict);
