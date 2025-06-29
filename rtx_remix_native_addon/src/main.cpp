@@ -22,6 +22,9 @@
 #include <cstdlib> // For system()
 #include <unistd.h> // for access()
 #include <pxr/usd/sdf/layer.h>          // For SdfLayer
+#include <pxr/usd/sdf/primSpec.h>       // For SdfPrimSpec
+#include <pxr/usd/sdf/attributeSpec.h>  // For SdfAttributeSpec
+#include <pxr/base/vt/value.h>          // For VtValue
 
 // Test function that will be callable from Python
 static PyObject* hello_world(PyObject* self, PyObject* args) {
@@ -400,12 +403,52 @@ PyObject* extract_material_data(const pxr::UsdShadeMaterial& material) {
     return material_dict;
 }
 
+// --- New Native Function: Update Prim Transform ---
+static PyObject* update_prim_transform(PyObject* self, PyObject* args) {
+    const char* mod_file_path;
+    const char* prim_path;
+    PyObject* transform_matrix_list;
+
+    if (!PyArg_ParseTuple(args, "ssO!", &mod_file_path, &prim_path, &PyList_Type, &transform_matrix_list)) {
+        return NULL;
+    }
+
+    pxr::SdfLayerRefPtr modLayer = pxr::SdfLayer::FindOrOpen(mod_file_path);
+    if (!modLayer) {
+        PyErr_SetString(PyExc_IOError, "Failed to open mod layer for writing.");
+        return NULL;
+    }
+
+    // Create a prim spec for the override. This will create the hierarchy if it doesn't exist.
+    pxr::SdfPrimSpecHandle primSpec = pxr::SdfCreatePrimInLayer(modLayer, pxr::SdfPath(prim_path));
+    
+    // Convert Python list to GfMatrix4d
+    pxr::GfMatrix4d transform_matrix;
+    double* matrix_data = transform_matrix.GetArray();
+    for (int i = 0; i < 16; ++i) {
+        matrix_data[i] = PyFloat_AsDouble(PyList_GetItem(transform_matrix_list, i));
+    }
+
+    // Author the transform operation by setting the 'xformOp:transform' attribute
+    primSpec->SetInfo(pxr::TfToken("typeName"), pxr::VtValue("Xform"));
+    pxr::SdfAttributeSpecHandle xformOp = pxr::SdfAttributeSpec::New(primSpec, "xformOp:transform", pxr::SdfValueTypeNames->Matrix4d);
+    xformOp->SetDefaultValue(pxr::VtValue(transform_matrix));
+    
+    // Save the changes
+    modLayer->Save();
+    
+    std::cout << "  > Wrote transform for: " << prim_path << std::endl;
+
+    Py_RETURN_NONE;
+}
+
 // Method definition object
 static PyMethodDef RemixNativeMethods[] = {
     {"hello", hello_world, METH_NOARGS, "Prints a hello message from C++ and tests USD."},
     {"import_usd", import_usd, METH_VARARGS, "Imports a USD file and returns mesh data."},
     {"batch_convert_textures", batch_convert_textures_native, METH_VARARGS, "Converts a list of DDS files to PNG in parallel."},
     {"apply_mod", apply_mod_native, METH_VARARGS, "Applies a mod.usda file to an existing stage."},
+    {"update_prim_transform", update_prim_transform, METH_VARARGS, "Updates the transform of a prim in the mod file."},
     {NULL, NULL, 0, NULL}
 };
 

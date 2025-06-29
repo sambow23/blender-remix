@@ -110,6 +110,10 @@ class RemixOperatorBase:
                 self.apply_uvs(mesh, mesh_data)
         obj = bpy.data.objects.new(instance_name, mesh)
         obj["usd_path"] = instance_path
+        
+        # Populate the project's map
+        remix_project.blender_to_usd_map[obj.name] = instance_path
+        
         if 'transform' in mesh_data:
             flat_matrix = mesh_data['transform']
             matrix = mathutils.Matrix([flat_matrix[0:4], flat_matrix[4:8], flat_matrix[8:12], flat_matrix[12:16]])
@@ -371,7 +375,87 @@ class REMIX_OT_import_usd(bpy.types.Operator, ImportHelper, RemixOperatorBase):
         print("--- Native USD Import Finished ---")
         return {'FINISHED'}
 
-# --- Blender UI Panel ---
+# --- Project State Management ---
+
+class RemixProject:
+    """A singleton class to manage the state of the active Remix project."""
+    _instance = None
+
+    def __new__(cls, *args, **kwargs):
+        if not cls._instance:
+            cls._instance = super(RemixProject, cls).__new__(cls)
+        return cls._instance
+
+    def __init__(self):
+        self.base_capture_path = None
+        self.mod_file_path = None
+        self.blender_to_usd_map = {} # Maps Blender object names to USD paths
+        self.dirty_prims = set() # A set of usd_paths that need to be written
+
+    def open_project(self, base_capture, mod_file):
+        """Initializes the project state."""
+        self.base_capture_path = base_capture
+        self.mod_file_path = mod_file
+        print(f"Opened Remix Project: Mod '{mod_file}' on Base '{base_capture}'")
+        # In a full implementation, this is where we would load the composed stage
+        # and populate the blender_to_usd_map.
+
+    def mark_dirty(self, blender_obj):
+        """Marks a Blender object as needing to be synced to the mod file."""
+        if blender_obj.name in self.blender_to_usd_map:
+            usd_path = self.blender_to_usd_map[blender_obj.name]
+            # A small optimization: only mark if the transform has actually changed.
+            # This requires storing the last known transform, which adds complexity.
+            # For now, we'll mark it dirty on any depsgraph update.
+            self.dirty_prims.add(usd_path)
+            print(f"Marked '{usd_path}' as dirty.")
+
+    def find_blender_object(self, usd_path):
+        """Finds a Blender object by its 'usd_path' custom property."""
+        # This is inefficient. A better way is to populate our own map.
+        for obj in bpy.data.objects:
+            if obj.get("usd_path") == usd_path:
+                return obj
+        return None
+
+# Create a global instance
+remix_project = RemixProject()
+
+
+# --- New Operator to Open a Project ---
+
+class REMIX_OT_open_project(bpy.types.Operator, ImportHelper):
+    """Opens a Remix project by selecting a mod.usda file."""
+    bl_idname = "remix_native.open_project"
+    bl_label = "Open Remix Project"
+    
+    filter_glob: StringProperty(
+        default="*.usd;*.usda;*.usdc",
+        options={'HIDDEN'},
+        maxlen=255,
+    )
+
+    def execute(self, context):
+        # This is simplified. We would need to ask for the base capture as well.
+        # For now, we'll assume it's stored on the scene from a previous import.
+        base_capture = context.scene.get("rtx_remix_base_capture")
+        if not base_capture:
+            self.report({'ERROR'}, "Please import a base capture first.")
+            return {'CANCELLED'}
+        
+        remix_project.open_project(base_capture, self.filepath)
+        
+        # Register the handlers and timer
+        if not on_depsgraph_update_post in bpy.app.handlers.depsgraph_update_post:
+            bpy.app.handlers.depsgraph_update_post.append(on_depsgraph_update_post)
+        if not bpy.app.timers.is_registered(sync_timer):
+            bpy.app.timers.register(sync_timer)
+            
+        return {'FINISHED'}
+
+
+# --- Updated UI Panel ---
+
 class REMIX_PT_native_panel(bpy.types.Panel):
     bl_label = "RTX Remix Native"
     bl_idname = "REMIX_PT_native_panel"
@@ -386,14 +470,50 @@ class REMIX_PT_native_panel(bpy.types.Panel):
         if NATIVE_MODULE_LOADED:
             col.operator(REMIX_OT_import_usd.bl_idname, icon='IMPORT')
             col.operator(REMIX_OT_apply_mod.bl_idname, icon='FILE_REFRESH')
+            col.operator(REMIX_OT_open_project.bl_idname, icon='FILE_FOLDER')
         else:
             col.label(text="Native module failed to load.", icon='ERROR')
+
+
+# --- Blender Handlers and Timers for Live Sync ---
+
+def on_depsgraph_update_post(scene, depsgraph):
+    """Handler called after the dependency graph is updated."""
+    if not remix_project.mod_file_path:
+        return # No active project
+
+    # Check for updated objects
+    for update in depsgraph.updates:
+        if update.id.object is not None:
+            obj = update.id.object
+            if "usd_path" in obj:
+                remix_project.mark_dirty(obj)
+
+def sync_timer():
+    """Timer function that periodically syncs dirty prims."""
+    if not remix_project.dirty_prims:
+        return 1.0 # Check again in 1 second
+
+    print(f"Syncing {len(remix_project.dirty_prims)} dirty prims...")
+    
+    dirty_copy = remix_project.dirty_prims.copy()
+    remix_project.dirty_prims.clear()
+
+    for usd_path in dirty_copy:
+        obj = remix_project.find_blender_object(usd_path) # Need to implement this in the project
+        if obj:
+            # Flatten matrix for C++ function
+            matrix_world_list = [item for row in obj.matrix_world for item in row]
+            remix_native.update_prim_transform(remix_project.mod_file_path, usd_path, matrix_world_list)
+
+    return 1.0
 
 
 # --- Registration ---
 classes = (
     REMIX_OT_import_usd,
     REMIX_OT_apply_mod,
+    REMIX_OT_open_project,
     REMIX_PT_native_panel,
 )
 
