@@ -85,11 +85,25 @@ static PyObject* import_usd(PyObject* self, PyObject* args) {
         }
         PyDict_SetItemString(mesh_dict, "transform", transform_list);
 
-        // --- Paths as Hashes ---
-        PyDict_SetItemString(mesh_dict, "mesh_path", PyUnicode_FromString(prim.GetPath().GetText()));
-
         // --- Name ---
-        PyDict_SetItemString(mesh_dict, "name", PyUnicode_FromString(prim.GetName().GetText()));
+        std::string instance_name;
+        std::string prim_name = prim.GetName().GetText();
+        // If a prim is just called "mesh", its parent usually has the meaningful instance name.
+        if (prim_name == "mesh" && prim.GetParent()) {
+            instance_name = prim.GetParent().GetName().GetText();
+        } else {
+            instance_name = prim_name;
+        }
+        PyDict_SetItemString(mesh_dict, "instance_name", PyUnicode_FromString(instance_name.c_str()));
+        
+        // --- Paths ---
+        // The path to the master/prototype. This is the key for sharing mesh data.
+        pxr::UsdPrim prototype = prim.GetPrototype();
+        std::string mesh_definition_path = prototype ? prototype.GetPath().GetText() : prim.GetPath().GetText();
+        PyDict_SetItemString(mesh_dict, "mesh_definition_path", PyUnicode_FromString(mesh_definition_path.c_str()));
+
+        // The path to the unique instance itself.
+        PyDict_SetItemString(mesh_dict, "instance_path", PyUnicode_FromString(prim.GetPath().GetText()));
 
         // --- Vertices ---
         pxr::VtArray<pxr::GfVec3f> points;

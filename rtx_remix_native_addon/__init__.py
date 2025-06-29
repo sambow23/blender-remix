@@ -56,39 +56,33 @@ class REMIX_OT_import_usd(bpy.types.Operator, ImportHelper):
 
     def create_blender_mesh(self, mesh_data):
         """Creates a Blender mesh object from the data returned by C++."""
-        mesh_path = mesh_data['mesh_path']
-        object_name = mesh_data['name']
+        mesh_definition_path = mesh_data['mesh_definition_path']
+        instance_path = mesh_data['instance_path']
+        instance_name = mesh_data['instance_name']
 
-        # --- Check for existing mesh data using its unique path ---
-        mesh = None
-        for m in bpy.data.meshes:
-            if m.get("usd_path") == mesh_path:
-                mesh = m
-                break
+        # Construct the correct, clean mesh data-block name
+        base_name = instance_name
+        if '_' in instance_name:
+            parts = instance_name.rsplit('_', 1)
+            if parts[1].isdigit():
+                base_name = parts[0] # Strips the _1, _2 suffix
+        
+        mesh_data_name = base_name.replace("inst_", "mesh_")
+
+        # --- Check for existing mesh data BY NAME ---
+        mesh = bpy.data.meshes.get(mesh_data_name)
         
         if mesh:
-            print(f"Reusing existing mesh data for path: {mesh_path}")
+            print(f"Reusing existing mesh data: {mesh.name}")
         else:
-            # Generate a user-friendly name for the mesh data block
-            # e.g., "inst_ABC" -> "mesh_ABC"
-            mesh_name = object_name.replace("inst_", "mesh_")
+            print(f"Creating new mesh data: {mesh_data_name}")
+            mesh = bpy.data.meshes.new(name=mesh_data_name)
+            mesh["usd_path"] = mesh_definition_path # Store definition path for good measure
 
-            # Check if this user-friendly name already exists
-            if mesh_name in bpy.data.meshes:
-                mesh = bpy.data.meshes[mesh_name]
-                # Still, double-check if the path matches, just in case of non-unique names
-                if mesh.get("usd_path") != mesh_path:
-                     mesh = bpy.data.meshes.new(name=mesh_name)
-            else:
-                mesh = bpy.data.meshes.new(name=mesh_name)
-
-            mesh["usd_path"] = mesh_path # Store unique path in a custom property
-
-            # Process vertices
+            # Process vertices, faces, and UVs (only if creating for the first time)
             flat_verts = mesh_data['vertices']
             vertices = [tuple(flat_verts[i:i+3]) for i in range(0, len(flat_verts), 3)]
 
-            # Process faces
             face_indices = mesh_data['face_vertex_indices']
             face_counts = mesh_data['face_vertex_counts']
             
@@ -98,17 +92,15 @@ class REMIX_OT_import_usd(bpy.types.Operator, ImportHelper):
                 faces.append(tuple(face_indices[current_index : current_index + count]))
                 current_index += count
             
-            # Populate mesh with data
             mesh.from_pydata(vertices, [], faces)
             mesh.update()
 
-            # --- Apply UVs ---
             if 'uvs' in mesh_data:
                 self.apply_uvs(mesh, mesh_data)
 
-        # Create a new object for this instance
-        obj = bpy.data.objects.new(object_name, mesh)
-        obj["usd_path"] = mesh_path
+        # Create a new object for this instance, and link it to the (now correctly shared) mesh data
+        obj = bpy.data.objects.new(instance_name, mesh)
+        obj["usd_path"] = instance_path # Store unique instance path on object
 
         # Apply the transform
         if 'transform' in mesh_data:
