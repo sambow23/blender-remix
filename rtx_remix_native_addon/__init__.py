@@ -81,8 +81,39 @@ class REMIX_OT_import_usd(bpy.types.Operator, ImportHelper):
         mesh.from_pydata(vertices, [], faces)
         mesh.update()
 
+        # --- Apply UVs ---
+        if 'uvs' in mesh_data:
+            self.apply_uvs(mesh, mesh_data)
+
         # Link object to scene
         bpy.context.collection.objects.link(obj)
+
+    def apply_uvs(self, mesh, mesh_data):
+        """Applies UV data to a Blender mesh."""
+        flat_uvs = mesh_data['uvs']
+        uvs = [tuple(flat_uvs[i:i+2]) for i in range(0, len(flat_uvs), 2)]
+        interpolation = mesh_data['uv_interpolation']
+        
+        uv_layer = mesh.uv_layers.new(name="UVMap")
+
+        if interpolation == 'faceVarying':
+            # This is the most common and direct case for Blender
+            if len(uv_layer.data) == len(uvs):
+                for i in range(len(uvs)):
+                    uv_layer.data[i].uv = uvs[i]
+            else:
+                print(f"Warning: Mismatch between loop count ({len(uv_layer.data)}) and UV count ({len(uvs)}) for mesh '{mesh.name}'.")
+
+        elif interpolation == 'vertex':
+            # Less common for UVs, but possible
+            if len(mesh.vertices) == len(uvs):
+                # Map vertex UVs to mesh loops
+                for loop in mesh.loops:
+                    uv_layer.data[loop.index].uv = uvs[loop.vertex_index]
+            else:
+                 print(f"Warning: Mismatch between vertex count ({len(mesh.vertices)}) and UV count ({len(uvs)}) for mesh '{mesh.name}'.")
+        else:
+            print(f"Warning: Unsupported UV interpolation '{interpolation}' for mesh '{mesh.name}'.")
 
 # --- Blender UI Panel ---
 class REMIX_PT_native_panel(bpy.types.Panel):

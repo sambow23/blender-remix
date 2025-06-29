@@ -3,8 +3,10 @@
 #include <pxr/usd/usd/primRange.h> // For traversing prims
 #include <pxr/usd/usdGeom/gprim.h> // For checking if a prim is a geometric primitive
 #include <pxr/usd/usdGeom/mesh.h>      // For UsdGeomMesh
+#include <pxr/usd/usdGeom/primvarsAPI.h> // For reading primvars like UVs
 #include <pxr/base/vt/array.h>       // For VtArray
 #include <pxr/base/gf/vec3f.h>       // For GfVec3f
+#include <pxr/base/gf/vec2f.h>         // For UV coordinates
 #include <iostream>
 #include <vector>
 
@@ -81,6 +83,26 @@ static PyObject* import_usd(PyObject* self, PyObject* args) {
             PyList_SET_ITEM(indices_list, i, PyLong_FromLong(face_indices[i]));
         }
         PyDict_SetItemString(mesh_dict, "face_vertex_indices", indices_list);
+
+        // --- UVs (st coordinates) ---
+        pxr::UsdGeomPrimvarsAPI primvarsAPI(mesh);
+        pxr::UsdGeomPrimvar stPrimvar = primvarsAPI.GetPrimvar(pxr::TfToken("st"));
+        if (stPrimvar) {
+            pxr::VtArray<pxr::GfVec2f> uvs;
+            stPrimvar.ComputeFlattened(&uvs); // This resolves the indexing for us
+
+            if (!uvs.empty()) {
+                PyObject* uvs_list = PyList_New(uvs.size() * 2);
+                for (size_t i = 0; i < uvs.size(); ++i) {
+                    PyList_SET_ITEM(uvs_list, i * 2 + 0, PyFloat_FromDouble(uvs[i][0]));
+                    PyList_SET_ITEM(uvs_list, i * 2 + 1, PyFloat_FromDouble(uvs[i][1]));
+                }
+                PyDict_SetItemString(mesh_dict, "uvs", uvs_list);
+
+                std::string interpolation = stPrimvar.GetInterpolation().GetString();
+                PyDict_SetItemString(mesh_dict, "uv_interpolation", PyUnicode_FromString(interpolation.c_str()));
+            }
+        }
         
         // Add the dict to our main list
         PyList_Append(meshes_list, mesh_dict);
