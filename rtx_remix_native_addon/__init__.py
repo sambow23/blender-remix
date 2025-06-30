@@ -282,7 +282,6 @@ class RemixOperatorBase:
         """Replaces the node tree of an existing Blender material."""
         mat_to_replace = bpy.data.materials.get(material_data['name'])
         if not mat_to_replace:
-            # Fallback to searching by custom property
             for mat in bpy.data.materials:
                 if mat.get("usd_path") == usd_path:
                     mat_to_replace = mat
@@ -294,11 +293,10 @@ class RemixOperatorBase:
 
         print(f"  > Replacing material nodes for: {mat_to_replace.name}")
         
-        # Clear existing nodes
         for node in mat_to_replace.node_tree.nodes:
             mat_to_replace.node_tree.nodes.remove(node)
             
-        # Rebuild node tree using the same logic as creation
+        # Use the correct filepath context when rebuilding nodes
         self.build_material_nodes(mat_to_replace, material_data, mod_file_path)
 
 class REMIX_OT_apply_mod(bpy.types.Operator, ImportHelper, RemixOperatorBase):
@@ -422,9 +420,37 @@ class RemixProject:
 remix_project = RemixProject()
 
 
-# --- New Operator to Open a Project ---
+# --- Blender Handlers and Timers for Save Sync ---
 
-class REMIX_OT_open_project(bpy.types.Operator, ImportHelper):
+def on_save_pre(dummy):
+    """Handler called just before the .blend file is saved."""
+    mod_file_path = remix_project.mod_file_path
+    if not mod_file_path:
+        # No active project, do nothing.
+        return
+
+    print(f"--- Blender save detected, syncing changes to {mod_file_path} ---")
+    
+    updated_count = 0
+    for obj in bpy.context.scene.objects:
+        if "usd_path" in obj:
+            # Here we would compare current vs. stored transforms to be efficient.
+            # For now, we save all transforms on every file save.
+            usd_path = obj["usd_path"]
+            matrix_world_list = [item for row in obj.matrix_world for item in row]
+            
+            try:
+                remix_native.update_prim_transform(mod_file_path, usd_path, matrix_world_list)
+                updated_count += 1
+            except Exception as e:
+                print(f"  > ERROR writing transform for {usd_path}: {e}")
+                
+    print(f"Saved transforms for {updated_count} objects.")
+
+
+# --- Operators ---
+
+class REMIX_OT_open_project(bpy.types.Operator, ImportHelper, RemixOperatorBase):
     """Opens a Remix project by selecting a mod.usda file."""
     bl_idname = "remix_native.open_project"
     bl_label = "Open Remix Project"
@@ -445,11 +471,25 @@ class REMIX_OT_open_project(bpy.types.Operator, ImportHelper):
         
         remix_project.open_project(base_capture, self.filepath)
         
-        # Register the handlers and timer
-        if not on_depsgraph_update_post in bpy.app.handlers.depsgraph_update_post:
-            bpy.app.handlers.depsgraph_update_post.append(on_depsgraph_update_post)
-        if not bpy.app.timers.is_registered(sync_timer):
-            bpy.app.timers.register(sync_timer)
+        # Register the save handler
+        if on_save_pre not in bpy.app.handlers.save_pre:
+            bpy.app.handlers.save_pre.append(on_save_pre)
+            
+        self.report({'INFO'}, "Remix project opened. Applying initial mod state...")
+
+        # Immediately apply the mod file to sync the scene
+        try:
+            replacements = remix_native.apply_mod(base_capture, self.filepath)
+            print(f"Applying {len(replacements)} initial replacements from mod file.")
+            
+            for usd_path, data in replacements.items():
+                if "vertices" in data:
+                    self.replace_mesh(usd_path, data)
+                elif "textures" in data:
+                    self.replace_material(usd_path, data, self.filepath)
+        except Exception as e:
+            self.report({'ERROR'}, f"Failed to apply initial mod state: {e}")
+            return {'CANCELLED'}
             
         return {'FINISHED'}
 
@@ -473,40 +513,6 @@ class REMIX_PT_native_panel(bpy.types.Panel):
             col.operator(REMIX_OT_open_project.bl_idname, icon='FILE_FOLDER')
         else:
             col.label(text="Native module failed to load.", icon='ERROR')
-
-
-# --- Blender Handlers and Timers for Live Sync ---
-
-def on_depsgraph_update_post(scene, depsgraph):
-    """Handler called after the dependency graph is updated."""
-    if not remix_project.mod_file_path:
-        return # No active project
-
-    # Check for updated objects
-    for update in depsgraph.updates:
-        if update.id.object is not None:
-            obj = update.id.object
-            if "usd_path" in obj:
-                remix_project.mark_dirty(obj)
-
-def sync_timer():
-    """Timer function that periodically syncs dirty prims."""
-    if not remix_project.dirty_prims:
-        return 1.0 # Check again in 1 second
-
-    print(f"Syncing {len(remix_project.dirty_prims)} dirty prims...")
-    
-    dirty_copy = remix_project.dirty_prims.copy()
-    remix_project.dirty_prims.clear()
-
-    for usd_path in dirty_copy:
-        obj = remix_project.find_blender_object(usd_path) # Need to implement this in the project
-        if obj:
-            # Flatten matrix for C++ function
-            matrix_world_list = [item for row in obj.matrix_world for item in row]
-            remix_native.update_prim_transform(remix_project.mod_file_path, usd_path, matrix_world_list)
-
-    return 1.0
 
 
 # --- Registration ---
@@ -533,6 +539,10 @@ def unregister():
     print("Unregistering RTX Remix Native Toolkit.")
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
+    
+    # It's also good practice to unregister the handler when the addon is disabled
+    if on_save_pre in bpy.app.handlers.save_pre:
+        bpy.app.handlers.save_pre.remove(on_save_pre)
 
 if __name__ == "__main__":
     register() 
