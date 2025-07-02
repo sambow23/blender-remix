@@ -3,6 +3,10 @@ ADDON_DIR = os.path.dirname(os.path.abspath(__file__))
 
 print(f"RTX Remix Importer: Addon directory set to: {ADDON_DIR}")
 
+# Native module availability (will be set by __init__.py)
+NATIVE_MODULE_LOADED = False
+remix_native = None
+
 # Material conversion constants
 # Aperture PBR material types in RTX Remix
 MATERIAL_TYPES = {

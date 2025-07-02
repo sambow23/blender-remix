@@ -824,31 +824,42 @@ def import_rtx_remix_usd_with_materials(context, usd_file_path, import_materials
     Core import logic for RTX Remix USD files.
     
     This is the main entry point that orchestrates the import process.
+    Now uses the native C++ backend for performance.
     """
-    if not USD_AVAILABLE:
-        return None, None, None, "USD Python libraries (pxr) not found. Please install them in Blender's Python environment."
+    from . import constants
+    
+    if not constants.NATIVE_MODULE_LOADED:
+        return None, None, None, "Native C++ module not available. Please build the native module first."
 
-    print(f"Starting RTX Remix USD Import: {usd_file_path}")
+    print(f"Starting RTX Remix USD Import (Native Backend): {usd_file_path}")
     print(f" Options: Import Materials={import_materials}, Import Lights={import_lights}")
 
     try:
-        # Setup texture directory
-        texture_dir = setup_texture_directory(usd_file_path)
+        # Use native C++ backend to import USD
+        meshes_data = constants.remix_native.import_usd(usd_file_path)
         
-        # Open USD stage
-        stage = open_usd_stage(usd_file_path)
+        if not meshes_data:
+            return None, None, None, f"Failed to import USD file: {usd_file_path}"
         
-        # Create context object
-        usd_context = USDStageContext(stage, usd_file_path, scene_scale)
+        print(f"Native backend imported {len(meshes_data)} mesh objects")
+        
+        # CRITICAL: Pre-convert all DDS textures to PNG before creating materials
+        # This matches the native addon's workflow
+        if import_materials:
+            batch_convert_textures_native(meshes_data, usd_file_path)
         
         # Setup Blender collections
         import_collection, collections = setup_blender_collections(context, usd_file_path)
         
-        # Process different types of content
-        process_materials(usd_context, import_materials)
-        process_lights(usd_context, collections, import_lights)
-        process_cameras(usd_context, collections)
-        process_meshes_and_instances(usd_context, collections, import_materials)
+        # Create a context object for compatibility with existing code
+        usd_context = create_native_context(usd_file_path, scene_scale)
+        
+        # Process native mesh data
+        process_native_meshes(meshes_data, usd_context, collections, import_materials, usd_file_path)
+        
+        # TODO: Process lights and cameras (will need native module extensions)
+        if import_lights:
+            print("Light import not yet implemented with native backend")
         
         # Finalize import
         finalize_import(context, usd_context)
@@ -858,10 +869,373 @@ def import_rtx_remix_usd_with_materials(context, usd_file_path, import_materials
         
         return usd_context.created_objects, usd_context.created_lights_set, usd_context.created_cameras_set, success_message
         
-    except USDImportError as e:
-        return None, None, None, str(e)
     except Exception as e:
-        error_msg = f"Unexpected error during import: {e}"
+        error_msg = f"Error during native import: {e}"
         print(error_msg)
         traceback.print_exc()
-        return None, None, None, error_msg 
+        return None, None, None, error_msg
+
+
+def batch_convert_textures_native(meshes_data, usd_file_path):
+    """Pre-convert all DDS textures to PNG cache like the native addon."""
+    from . import constants
+    
+    print("--- Collecting textures for conversion ---")
+    dds_paths_to_convert = set()
+    
+    for mesh_data in meshes_data:
+        if 'material' in mesh_data:
+            textures = mesh_data['material'].get('textures', {})
+            for tex_path in textures.values():
+                if tex_path.lower().endswith(".dds"):
+                    full_path = resolve_texture_path_native(tex_path, usd_file_path)
+                    if full_path and os.path.exists(full_path):
+                        cached_png_path = get_cached_png_path_native(full_path)
+                        if not os.path.exists(cached_png_path):
+                            dds_paths_to_convert.add(full_path)
+
+    if not dds_paths_to_convert:
+        print("No new textures to convert.")
+        return
+    
+    print(f"Found {len(dds_paths_to_convert)} unique textures to convert...")
+    
+    texconv_path = get_texconv_path_native()
+    cache_dir = os.path.join(os.path.dirname(__file__), "texture_cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    
+    # Use native backend for conversion
+    constants.remix_native.batch_convert_textures(list(dds_paths_to_convert), texconv_path, cache_dir)
+
+
+def resolve_texture_path_native(tex_path, usd_file_path):
+    """Robustly resolves a texture path from the USD file like the native addon."""
+    usd_dir = os.path.dirname(usd_file_path)
+    # Convert backslashes to forward slashes and handle relative paths
+    texture_path_unix = tex_path.replace("\\\\", "/").replace("\\", "/")
+    if texture_path_unix.startswith("../"):
+        texture_path_unix = texture_path_unix[3:]
+    return os.path.normpath(os.path.join(usd_dir, texture_path_unix))
+
+
+def get_cached_png_path_native(dds_path):
+    """Calculates the final path for a cached PNG file from an absolute DDS path."""
+    addon_dir = os.path.dirname(__file__)
+    cache_dir = os.path.join(addon_dir, "texture_cache")
+    original_dds_filename = os.path.basename(dds_path)
+    png_filename = os.path.splitext(original_dds_filename)[0] + ".png"
+    return os.path.join(cache_dir, png_filename)
+
+
+def get_texconv_path_native():
+    """Gets the path to the texconv executable."""
+    addon_dir = os.path.dirname(__file__)
+    # Check for texconv in bin directory
+    texconv_path = os.path.join(addon_dir, "bin", "texconv.exe")
+    if os.path.exists(texconv_path):
+        return texconv_path
+    
+    # Fallback to native subdirectory
+    texconv_path = os.path.join(addon_dir, "native", "bin", "texconv.exe")
+    if os.path.exists(texconv_path):
+        return texconv_path
+    
+    # Final fallback - look in system PATH
+    return "texconv.exe"
+
+
+def create_native_context(usd_file_path, scene_scale):
+    """Create a context object compatible with existing code for native backend."""
+    class NativeContext:
+        def __init__(self):
+            self.usd_file_path = usd_file_path
+            self.scene_scale = scene_scale
+            self.created_objects = set()
+            self.created_lights_set = set()
+            self.created_cameras_set = set()
+            self.material_cache = {}
+    
+    return NativeContext()
+
+
+def process_native_meshes(meshes_data, context, collections, import_materials, usd_file_path):
+    """Process mesh data from the native backend."""
+    from .material_utils import create_material
+    
+    for mesh_data in meshes_data:
+        try:
+            # Create Blender mesh from native data
+            bl_mesh = create_blender_mesh_from_native_data(mesh_data)
+            if not bl_mesh:
+                continue
+            
+            # Create Blender object
+            instance_name = mesh_data.get('instance_name', 'UnknownMesh')
+            bl_object = bpy.data.objects.new(instance_name, bl_mesh)
+            
+            # Store USD paths for compatibility
+            mesh_def_path = mesh_data.get('mesh_definition_path', '')
+            instance_path = mesh_data.get('instance_path', '')
+            bl_object["usd_prim_path"] = mesh_def_path
+            bl_object["usd_instance_path"] = instance_path
+            
+            # Apply transform
+            if 'transform' in mesh_data:
+                apply_native_transform(bl_object, mesh_data['transform'], context.scene_scale)
+            
+            # Link to collection
+            collections['meshes'].objects.link(bl_object)
+            context.created_objects.add(bl_object)
+            
+            # Handle materials
+            if import_materials and 'material' in mesh_data:
+                assign_native_material(bl_object, mesh_data['material'], context, usd_file_path)
+            
+            print(f"  Created object: {bl_object.name}")
+            
+        except Exception as e:
+            print(f"Error processing mesh data: {e}")
+            traceback.print_exc()
+
+
+def create_blender_mesh_from_native_data(mesh_data):
+    """Create Blender mesh from native backend data format."""
+    import bmesh
+    
+    # Get mesh data
+    vertices = mesh_data.get('vertices', [])
+    face_counts = mesh_data.get('face_vertex_counts', [])
+    face_indices = mesh_data.get('face_vertex_indices', [])
+    
+    if not vertices or not face_counts or not face_indices:
+        print("Warning: Incomplete mesh data from native backend")
+        return None
+    
+    # Convert flat vertex list to tuples
+    verts = [tuple(vertices[i:i+3]) for i in range(0, len(vertices), 3)]
+    
+    # Convert face data to Blender format
+    faces = []
+    current_index = 0
+    for count in face_counts:
+        if count >= 3:  # Valid face
+            face = tuple(face_indices[current_index:current_index + count])
+            faces.append(face)
+        current_index += count
+    
+    # Create mesh
+    mesh_name = mesh_data.get('instance_name', 'NativeMesh')
+    bl_mesh = bpy.data.meshes.new(name=mesh_name)
+    bl_mesh.from_pydata(verts, [], faces)
+    bl_mesh.update()
+    
+    # Apply UVs if available
+    if 'uvs' in mesh_data and mesh_data['uvs']:
+        apply_native_uvs(bl_mesh, mesh_data)
+    
+    return bl_mesh
+
+
+def apply_native_transform(bl_object, transform_matrix, scene_scale):
+    """Apply transform matrix from native backend."""
+    import mathutils
+    
+    # Convert flat 16-element list to 4x4 matrix
+    if len(transform_matrix) == 16:
+        matrix = mathutils.Matrix([
+            transform_matrix[0:4],
+            transform_matrix[4:8], 
+            transform_matrix[8:12],
+            transform_matrix[12:16]
+        ])
+        # CRITICAL: Transpose the matrix like the native addon does!
+        matrix.transpose()
+        bl_object.matrix_world = matrix
+        
+        # Apply scene scale by scaling the matrix rather than object scale
+        if scene_scale != 1.0:
+            scale_matrix = mathutils.Matrix.Scale(scene_scale, 4)
+            bl_object.matrix_world = scale_matrix @ bl_object.matrix_world
+
+
+def apply_native_uvs(bl_mesh, mesh_data):
+    """Apply UV coordinates from native backend."""
+    uvs = mesh_data.get('uvs', [])
+    interpolation = mesh_data.get('uv_interpolation', 'faceVarying')
+    
+    if not uvs:
+        return
+    
+    # Convert flat UV list to tuples
+    uv_coords = [tuple(uvs[i:i+2]) for i in range(0, len(uvs), 2)]
+    
+    # Create UV layer
+    uv_layer = bl_mesh.uv_layers.new(name="UVMap")
+    
+    if interpolation == 'faceVarying':
+        # Direct mapping for face-varying UVs
+        if len(uv_layer.data) == len(uv_coords):
+            for i, uv in enumerate(uv_coords):
+                uv_layer.data[i].uv = uv
+        else:
+            print(f"Warning: UV count mismatch for mesh {bl_mesh.name}")
+    elif interpolation == 'vertex':
+        # Map vertex UVs to loops
+        if len(bl_mesh.vertices) == len(uv_coords):
+            for loop in bl_mesh.loops:
+                if loop.vertex_index < len(uv_coords):
+                    uv_layer.data[loop.index].uv = uv_coords[loop.vertex_index]
+
+
+def assign_native_material(bl_object, material_data, context, usd_file_path):
+    """Assign material from native backend data."""
+    try:
+        material_name = material_data.get('name', 'UnknownMaterial')
+        material_path = material_data.get('material_path', '')
+        
+        # Check if material already exists in cache
+        if material_path in context.material_cache:
+            bl_material = context.material_cache[material_path]
+        else:
+            # Create new material
+            bl_material = create_native_material(material_data, usd_file_path)
+            if bl_material:
+                context.material_cache[material_path] = bl_material
+        
+        if bl_material:
+            # Assign to object
+            if bl_object.data.materials:
+                bl_object.data.materials[0] = bl_material
+            else:
+                bl_object.data.materials.append(bl_material)
+            print(f"  Assigned material: {bl_material.name}")
+        
+    except Exception as e:
+        print(f"Error assigning material: {e}")
+
+
+def create_native_material(material_data, usd_file_path):
+    """Create Blender material from native backend data."""
+    try:
+        material_name = material_data.get('name', 'UnknownMaterial')
+        textures = material_data.get('textures', {})
+        
+        # Create basic material
+        bl_material = bpy.data.materials.new(name=material_name)
+        bl_material.use_nodes = True
+        
+        # Get nodes
+        nodes = bl_material.node_tree.nodes
+        links = bl_material.node_tree.links
+        
+        # Clear default nodes
+        nodes.clear()
+        
+        # Create principled BSDF
+        bsdf = nodes.new(type='ShaderNodeBsdfPrincipled')
+        bsdf.location = (0, 0)
+        
+        # Create output
+        output = nodes.new(type='ShaderNodeOutputMaterial')
+        output.location = (300, 0)
+        
+        # Link BSDF to output
+        links.new(bsdf.outputs['BSDF'], output.inputs['Surface'])
+        
+        # Handle textures
+        if textures:
+            setup_native_material_textures(bl_material, textures, usd_file_path)
+        
+        return bl_material
+        
+    except Exception as e:
+        print(f"Error creating material: {e}")
+        return None
+
+
+def setup_native_material_textures(bl_material, textures, usd_file_path):
+    """Setup textures for material from native backend data."""
+    from .texture_utils import load_texture
+    
+    nodes = bl_material.node_tree.nodes
+    links = bl_material.node_tree.links
+    bsdf = nodes.get('Principled BSDF')
+    
+    if not bsdf:
+        return
+    
+    # Texture mapping - match the native addon's approach
+    texture_mapping = {
+        'diffuse_texture': 'Base Color',
+        'diffuseColor': 'Base Color',
+        'BaseColor': 'Base Color',
+        'normal': 'Normal',
+        'normal_texture': 'Normal',
+        'roughness': 'Roughness',
+        'roughness_texture': 'Roughness',
+        'metallic': 'Metallic',
+        'metallic_texture': 'Metallic',
+        'emissive_color': 'Emission',
+        'emission_texture': 'Emission',
+        'Emission': 'Emission Color'
+    }
+    
+    node_pos_y = 300
+    for tex_type, tex_path in textures.items():
+        try:
+            socket_name = texture_mapping.get(tex_type)
+            if not socket_name or socket_name not in bsdf.inputs:
+                continue
+            
+            # Handle DDS files - use cached PNG conversion like native addon
+            final_tex_path = tex_path
+            if tex_path.lower().endswith(".dds"):
+                # Resolve the full DDS path
+                full_dds_path = resolve_texture_path_native(tex_path, usd_file_path)
+                # Get the cached PNG path
+                final_tex_path = get_cached_png_path_native(full_dds_path)
+                if not os.path.exists(final_tex_path):
+                    print(f"  > WARNING: Expected cached texture not found: {final_tex_path}")
+                    continue
+            
+            print(f"  > Loading texture '{tex_type}': {final_tex_path}")
+            
+            # Create texture node
+            tex_node = nodes.new(type='ShaderNodeTexImage')
+            tex_node.location = (-400, node_pos_y)
+            
+            try:
+                # Load the image 
+                tex_node.image = bpy.data.images.load(final_tex_path, check_existing=True)
+                
+                # Handle normal maps and non-color data
+                is_normal = socket_name == 'Normal'
+                is_non_color = socket_name in ['Roughness', 'Metallic', 'Normal']
+                
+                if is_non_color:
+                    tex_node.image.colorspace_settings.name = 'Non-Color'
+                
+                # Connect to BSDF based on type
+                if is_normal:
+                    normal_map = nodes.new(type='ShaderNodeNormalMap')
+                    normal_map.location = (-200, node_pos_y)
+                    links.new(tex_node.outputs['Color'], normal_map.inputs['Color'])
+                    links.new(normal_map.outputs['Normal'], bsdf.inputs['Normal'])
+                else:
+                    # Direct connection
+                    links.new(tex_node.outputs['Color'], bsdf.inputs[socket_name])
+                
+                node_pos_y -= 350
+                
+            except Exception as e:
+                print(f"    ! Could not load image: {e}")
+                # Remove the unused texture node
+                nodes.remove(tex_node)
+                continue
+                    
+        except Exception as e:
+            print(f"Error setting up texture {tex_type}: {e}")
+
+
+# Keep the old functions for now but mark them as deprecated
+# This maintains compatibility while we transition 

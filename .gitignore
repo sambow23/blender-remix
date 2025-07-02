@@ -11,3 +11,6 @@ external/blender-4.4.3-linux-x64
 rtx_remix_native_addon/build/
 rtx_remix_native_addon/remix_native.so
 test_env/
+rtx_remix_native_addon/texture_cache
+rtx_remix_importer/native/src/build
+rtx_remix_importer/texture_cache

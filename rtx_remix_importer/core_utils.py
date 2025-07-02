@@ -12,6 +12,7 @@ import json
 import tempfile
 from typing import Optional, Tuple, Dict, Any, List, Callable
 from concurrent.futures import ThreadPoolExecutor
+import traceback
 
 try:
     from pxr import Usd, UsdGeom, UsdShade, Sdf, Gf, Vt
@@ -1008,64 +1009,57 @@ class TextureProcessor:
         output_path: str,
         progress_callback: Optional[Callable[[str], None]] = None
     ) -> bool:
-        """Convert DDS file to PNG format synchronously."""
-        if not self.is_available():
+        """Convert single DDS file to PNG using native backend.
+        
+        Args:
+            dds_path: Path to input DDS file
+            output_path: Path for output PNG file
+            progress_callback: Optional progress callback
+            
+        Returns:
+            True if conversion was successful, False otherwise
+        """
+        from . import constants
+        
+        if not constants.NATIVE_MODULE_LOADED:
             if progress_callback:
-                progress_callback("texconv.exe not found")
+                progress_callback("Native module not available")
+            return False
+        
+        if not os.path.exists(dds_path):
+            if progress_callback:
+                progress_callback(f"DDS file not found: {dds_path}")
             return False
         
         try:
-            if progress_callback:
-                progress_callback(f"Converting {os.path.basename(dds_path)} to PNG...")
-            
-            # Create output directory
+            # Use native backend for single file conversion
             output_dir = os.path.dirname(output_path)
             os.makedirs(output_dir, exist_ok=True)
             
-            # Convert DDS to PNG using texconv
-            cmd = [
-                self.texconv_path,
-                dds_path,
-                "-o", output_dir,
-                "-ft", "png",
-                "-y",  # Overwrite existing
-                "-nologo",
-            ]
+            if progress_callback:
+                progress_callback(f"Converting {os.path.basename(dds_path)}...")
             
-            result = subprocess.run(
-                cmd, 
-                capture_output=True, 
-                text=True, 
-                check=False, 
-                shell=False,
-                timeout=30
+            # Use native batch conversion with single file
+            constants.remix_native.batch_convert_textures(
+                [dds_path],
+                self.texconv_path or self._find_texconv(),
+                output_dir
             )
             
-            if result.returncode != 0:
+            # Check if output file was created
+            if os.path.exists(output_path):
                 if progress_callback:
-                    progress_callback(f"texconv failed: {result.stderr}")
-                return False
-            
-            # Handle texconv output file naming
-            original_name = os.path.splitext(os.path.basename(dds_path))[0]
-            texconv_output = os.path.join(output_dir, f"{original_name}.png")
-            
-            if os.path.exists(texconv_output):
-                # Rename to final output path if different
-                if texconv_output != output_path:
-                    os.replace(texconv_output, output_path)
-                
-                if progress_callback:
-                    progress_callback("Conversion complete")
+                    progress_callback(f"Successfully converted {os.path.basename(dds_path)}")
                 return True
             else:
                 if progress_callback:
-                    progress_callback("texconv output file not found")
+                    progress_callback(f"Conversion failed for {os.path.basename(dds_path)}")
                 return False
                 
         except Exception as e:
             if progress_callback:
-                progress_callback(f"Error: {e}")
+                progress_callback(f"Error converting {os.path.basename(dds_path)}: {e}")
+            print(f"Error converting DDS to PNG: {e}")
             return False
     
     async def convert_dds_to_png_async(
@@ -1092,27 +1086,61 @@ class TextureProcessor:
         output_dir: str,
         progress_callback: Optional[Callable[[int, int, str], None]] = None
     ) -> List[str]:
-        """Batch convert multiple DDS files to PNG."""
-        if not self.is_available():
+        """Convert multiple DDS files to PNG using the native backend.
+        
+        Args:
+            dds_files: List of DDS file paths to convert
+            output_dir: Directory to save PNG files
+            progress_callback: Optional callback for progress updates (current, total, filename)
+            
+        Returns:
+            List of output PNG file paths
+        """
+        from . import constants
+        
+        if not constants.NATIVE_MODULE_LOADED:
+            print("Warning: Native module not available for texture conversion")
             return []
         
-        converted_files = []
-        total_files = len(dds_files)
+        if not dds_files:
+            return []
         
-        for i, dds_file in enumerate(dds_files):
-            if progress_callback:
-                progress_callback(i, total_files, f"Converting {os.path.basename(dds_file)}")
+        # Filter out files that don't exist
+        valid_dds_files = [f for f in dds_files if os.path.exists(f)]
+        if not valid_dds_files:
+            print("Warning: No valid DDS files found for conversion")
+            return []
+        
+        print(f"Converting {len(valid_dds_files)} DDS files to PNG using native backend...")
+        
+        try:
+            # Use native backend for batch conversion
+            # The native function expects: dds_paths, texconv_path, cache_dir
+            constants.remix_native.batch_convert_textures(
+                valid_dds_files,
+                self.texconv_path or self._find_texconv(),
+                output_dir
+            )
             
-            base_name = os.path.splitext(os.path.basename(dds_file))[0]
-            output_path = os.path.join(output_dir, f"{base_name}.png")
+            # Generate output paths
+            output_files = []
+            for dds_path in valid_dds_files:
+                basename = os.path.splitext(os.path.basename(dds_path))[0]
+                png_path = os.path.join(output_dir, f"{basename}.png")
+                output_files.append(png_path)
+                
+                # Call progress callback if provided
+                if progress_callback:
+                    current_idx = valid_dds_files.index(dds_path) + 1
+                    progress_callback(current_idx, len(valid_dds_files), os.path.basename(dds_path))
             
-            if self.convert_dds_to_png_sync(dds_file, output_path):
-                converted_files.append(output_path)
-        
-        if progress_callback:
-            progress_callback(total_files, total_files, "Batch conversion complete")
-        
-        return converted_files
+            print(f"Native texture conversion completed. Generated {len(output_files)} PNG files.")
+            return output_files
+            
+        except Exception as e:
+            print(f"Error during native texture conversion: {e}")
+            traceback.print_exc()
+            return []
     
     def _save_blender_image_to_file(self, bl_image: bpy.types.Image, filepath: str):
         """Save a Blender image to a file."""
