@@ -1105,6 +1105,7 @@ def create_native_context(usd_file_path, scene_scale):
             self.created_lights_set = set()
             self.created_cameras_set = set()
             self.material_cache = {}
+            self.mesh_data_cache = {}  # Cache for shared mesh data
     
     return NativeContext()
 
@@ -1115,19 +1116,43 @@ def process_native_meshes(meshes_data, context, collections, import_materials, u
     
     for mesh_data in meshes_data:
         try:
-            # Create Blender mesh from native data
-            bl_mesh = create_blender_mesh_from_native_data(mesh_data)
-            if not bl_mesh:
-                continue
-            
-            # Create Blender object
+            # Get names and paths
+            mesh_definition_path = mesh_data.get('mesh_definition_path', '')
+            instance_path = mesh_data.get('instance_path', '')
             instance_name = mesh_data.get('instance_name', 'UnknownMesh')
+            
+            # Create base name from instance name (remove numerical suffix)
+            base_name = instance_name
+            if '_' in instance_name:
+                parts = instance_name.rsplit('_', 1)
+                if parts[1].isdigit():
+                    base_name = parts[0]
+            
+            # Create mesh data name by replacing "inst_" with "mesh_"
+            mesh_data_name = base_name.replace("inst_", "mesh_")
+            
+            # Check if mesh data already exists in cache (reuse shared geometry)
+            if mesh_data_name in context.mesh_data_cache:
+                bl_mesh = context.mesh_data_cache[mesh_data_name]
+                print(f"  Reusing existing mesh data: {bl_mesh.name}")
+            else:
+                # Create new mesh data
+                bl_mesh = create_blender_mesh_from_native_data(mesh_data, mesh_data_name)
+                if not bl_mesh:
+                    continue
+                
+                # Store USD path on mesh data
+                bl_mesh["usd_path"] = mesh_definition_path
+                
+                # Cache the mesh data for reuse
+                context.mesh_data_cache[mesh_data_name] = bl_mesh
+                print(f"  Created new mesh data: {bl_mesh.name}")
+            
+            # Create Blender object (still uses instance name)
             bl_object = bpy.data.objects.new(instance_name, bl_mesh)
             
             # Store USD paths for compatibility
-            mesh_def_path = mesh_data.get('mesh_definition_path', '')
-            instance_path = mesh_data.get('instance_path', '')
-            bl_object["usd_prim_path"] = mesh_def_path
+            bl_object["usd_prim_path"] = mesh_definition_path
             bl_object["usd_instance_path"] = instance_path
             
             # Apply transform
@@ -1149,7 +1174,7 @@ def process_native_meshes(meshes_data, context, collections, import_materials, u
             traceback.print_exc()
 
 
-def create_blender_mesh_from_native_data(mesh_data):
+def create_blender_mesh_from_native_data(mesh_data, mesh_data_name):
     """Create Blender mesh from native backend data format."""
     import bmesh
     
@@ -1174,9 +1199,8 @@ def create_blender_mesh_from_native_data(mesh_data):
             faces.append(face)
         current_index += count
     
-    # Create mesh
-    mesh_name = mesh_data.get('instance_name', 'NativeMesh')
-    bl_mesh = bpy.data.meshes.new(name=mesh_name)
+    # Create mesh using the provided mesh data name
+    bl_mesh = bpy.data.meshes.new(name=mesh_data_name)
     bl_mesh.from_pydata(verts, [], faces)
     bl_mesh.update()
     
