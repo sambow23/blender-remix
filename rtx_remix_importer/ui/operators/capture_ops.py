@@ -114,7 +114,8 @@ class ImportCaptureFile(bpy.types.Operator):
                 self.filepath,
                 import_materials=context.scene.remix_capture_import_materials,
                 import_lights=context.scene.remix_capture_import_lights,
-                scene_scale=context.scene.remix_capture_scene_scale
+                scene_scale=context.scene.remix_capture_scene_scale,
+                apply_smooth_shading=context.scene.remix_capture_apply_smooth_shading
             )
 
             if new_objects is not None:
@@ -214,7 +215,8 @@ class BatchImportSelectedCaptures(bpy.types.Operator):
                     capture.full_path,
                     import_materials=context.scene.remix_capture_import_materials,
                     import_lights=context.scene.remix_capture_import_lights,
-                    scene_scale=context.scene.remix_capture_scene_scale
+                    scene_scale=context.scene.remix_capture_scene_scale,
+                    apply_smooth_shading=context.scene.remix_capture_apply_smooth_shading
                 )
                 if new_objects is not None:
                     total_new_objects.update(new_objects)

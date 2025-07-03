@@ -42,6 +42,7 @@ class PT_RemixCapturePanel(bpy.types.Panel):
             col.prop(scene, "remix_capture_scene_scale")
             col.prop(scene, "remix_capture_import_materials")
             col.prop(scene, "remix_capture_import_lights")
+            col.prop(scene, "remix_capture_apply_smooth_shading")
             
             # Advanced settings (collapsible)
             col.separator()

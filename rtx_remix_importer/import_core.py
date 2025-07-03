@@ -810,16 +810,27 @@ def finalize_import(blender_context, usd_context):
 
 
 def create_success_message(usd_file_path, context):
-    """Create success message with import statistics."""
-    return (f"Successfully imported '{os.path.basename(usd_file_path)}'. "
-            f"Created: {len(context.created_objects)} objects, "
-            f"{len(context.created_lights_set)} lights, "
-            f"{len(context.created_cameras_set)} cameras. "
-            f"Processed: {len(context.material_cache)} materials. "
-            f"Applied Scale: {context.scene_scale:.3f}")
+    """Create a success message summarizing the import results."""
+    filename = os.path.basename(usd_file_path)
+    
+    mesh_count = len(context.created_objects)
+    light_count = len(context.created_lights_set)
+    camera_count = len(context.created_cameras_set)
+    
+    # Count materials if available in context
+    material_count = len(context.material_cache) if hasattr(context, 'material_cache') else 0
+    
+    success_msg = (
+        f"Successfully imported '{filename}'. "
+        f"Created: {mesh_count} objects, {light_count} lights, {camera_count} cameras. "
+        f"Processed: {material_count} materials. "
+        f"Applied Scale: {context.scene_scale:.3f}"
+    )
+    
+    return success_msg
 
 
-def import_rtx_remix_usd_with_materials(context, usd_file_path, import_materials, import_lights, scene_scale):
+def import_rtx_remix_usd_with_materials(context, usd_file_path, import_materials, import_lights, scene_scale, apply_smooth_shading=True):
     """
     Core import logic for RTX Remix USD files.
     
@@ -832,7 +843,7 @@ def import_rtx_remix_usd_with_materials(context, usd_file_path, import_materials
         return None, None, None, "Native C++ module not available. Please build the native module first."
 
     print(f"Starting RTX Remix USD Import (Native Backend): {usd_file_path}")
-    print(f" Options: Import Materials={import_materials}, Import Lights={import_lights}")
+    print(f" Options: Import Materials={import_materials}, Import Lights={import_lights}, Apply Smooth Shading={apply_smooth_shading}")
 
     try:
         # Use native C++ backend to import USD
@@ -857,9 +868,16 @@ def import_rtx_remix_usd_with_materials(context, usd_file_path, import_materials
         # Process native mesh data
         process_native_meshes(meshes_data, usd_context, collections, import_materials, usd_file_path)
         
-        # TODO: Process lights and cameras (will need native module extensions)
+        # Apply smooth shading to all imported meshes (optional)
+        if apply_smooth_shading:
+            apply_smooth_shading_to_imported_meshes(usd_context)
+        
+        # Process lights from native backend
         if import_lights:
-            print("Light import not yet implemented with native backend")
+            process_native_lights(usd_file_path, usd_context, collections, scene_scale)
+            
+        # Process cameras from native backend
+        process_native_cameras(usd_file_path, usd_context, collections, scene_scale)
         
         # Finalize import
         finalize_import(context, usd_context)
@@ -874,6 +892,139 @@ def import_rtx_remix_usd_with_materials(context, usd_file_path, import_materials
         print(error_msg)
         traceback.print_exc()
         return None, None, None, error_msg
+
+
+def apply_smooth_shading_to_imported_meshes(context):
+    """Apply smooth shading to all imported mesh objects for better appearance."""
+    try:
+        print("\n--- Applying Smooth Shading to Imported Meshes ---")
+        
+        mesh_objects = [obj for obj in context.created_objects if obj.type == 'MESH']
+        
+        if not mesh_objects:
+            print("No mesh objects found to apply smooth shading")
+            return
+        
+        print(f"Applying smooth shading to {len(mesh_objects)} mesh objects...")
+        
+        # Use bmesh for efficient batch processing
+        import bmesh
+        
+        smoothed_count = 0
+        for obj in mesh_objects:
+            try:
+                # Ensure we're in object mode
+                if bpy.context.active_object != obj:
+                    bpy.context.view_layer.objects.active = obj
+                
+                # Select only this object
+                bpy.ops.object.select_all(action='DESELECT')
+                obj.select_set(True)
+                
+                # Apply smooth shading
+                bpy.ops.object.shade_smooth()
+                
+                # Optionally enable auto smooth with a reasonable angle
+                if hasattr(obj.data, 'use_auto_smooth'):
+                    obj.data.use_auto_smooth = True
+                    obj.data.auto_smooth_angle = math.radians(30)  # 30 degree auto-smooth
+                
+                smoothed_count += 1
+                
+            except Exception as e:
+                print(f"Warning: Could not apply smooth shading to {obj.name}: {e}")
+                continue
+        
+        print(f"Successfully applied smooth shading to {smoothed_count}/{len(mesh_objects)} meshes")
+        
+        # Clear selection
+        bpy.ops.object.select_all(action='DESELECT')
+        
+    except Exception as e:
+        print(f"Error applying smooth shading: {e}")
+        traceback.print_exc()
+
+
+def process_native_lights(usd_file_path, context, collections, scene_scale):
+    """Process lights using hybrid approach - Python USD + existing light import code."""
+    if not USD_AVAILABLE:
+        print("USD libraries not available for light import")
+        return
+    
+    try:
+        print("\n--- Processing Lights (Hybrid: Python USD Stage) ---")
+        
+        # Open USD stage in Python to use existing light import code
+        stage = open_usd_stage(usd_file_path)
+        if not stage:
+            print("Failed to open USD stage for light import")
+            return
+        
+        # Use existing light import function
+        from .light_utils import import_lights_from_usd
+        imported_light_objects = import_lights_from_usd(stage, collections['lights'], scene_scale)
+        
+        # Add to context
+        context.created_lights_set.update(imported_light_objects)
+        
+        print(f"Imported {len(imported_light_objects)} lights using hybrid approach")
+        
+    except Exception as e:
+        print(f"Error processing lights: {e}")
+        traceback.print_exc()
+
+
+def process_native_cameras(usd_file_path, context, collections, scene_scale):
+    """Process cameras using hybrid approach - Python USD + existing camera import code."""
+    if not USD_AVAILABLE:
+        print("USD libraries not available for camera import")
+        return
+    
+    try:
+        print("\n--- Processing Cameras (Hybrid: Python USD Stage) ---")
+        
+        # Open USD stage in Python to use existing camera import code
+        stage = open_usd_stage(usd_file_path)
+        if not stage:
+            print("Failed to open USD stage for camera import")
+            return
+        
+        # Use existing camera import logic (adapted from process_cameras)
+        camera_count = 0
+        for prim in stage.TraverseAll():
+            if prim.IsA(UsdGeom.Camera):
+                try:
+                    # Create a temporary context for camera creation
+                    camera_context = create_camera_context(stage, usd_file_path, scene_scale)
+                    camera_obj = create_camera_from_prim(prim, camera_context)
+                    if camera_obj:
+                        collections['cameras'].objects.link(camera_obj)
+                        context.created_cameras_set.add(camera_obj)
+                        camera_count += 1
+                        print(f"  Created camera: {camera_obj.name}")
+                except Exception as e:
+                    print(f"ERROR creating camera from prim {prim.GetPath()}: {e}")
+                    traceback.print_exc()
+        
+        print(f"Imported {camera_count} cameras using hybrid approach")
+        
+    except Exception as e:
+        print(f"Error processing cameras: {e}")
+        traceback.print_exc()
+
+
+def create_camera_context(stage, usd_file_path, scene_scale):
+    """Create a camera context object compatible with existing camera creation code."""
+    class CameraContext:
+        def __init__(self):
+            self.stage = stage
+            self.usd_file_path = usd_file_path
+            self.scene_scale = scene_scale
+            self.time_code = Usd.TimeCode.Default()
+            self.xform_cache = UsdGeom.XformCache(self.time_code)
+            self.up_axis_is_y = (UsdGeom.GetStageUpAxis(stage) == UsdGeom.Tokens.y)
+    
+    return CameraContext()
 
 
 def batch_convert_textures_native(meshes_data, usd_file_path):
@@ -1235,6 +1386,63 @@ def setup_native_material_textures(bl_material, textures, usd_file_path):
                     
         except Exception as e:
             print(f"Error setting up texture {tex_type}: {e}")
+
+
+def test_native_integration():
+    """Test function to verify native integration is working correctly."""
+    from . import constants
+    import bpy
+    
+    print("=== RTX Remix Native Integration Test ===")
+    
+    # Test 1: Native module availability
+    print(f"1. Native module loaded: {constants.NATIVE_MODULE_LOADED}")
+    if constants.NATIVE_MODULE_LOADED:
+        print(f"   Module object: {constants.remix_native}")
+        print(f"   Available functions: {dir(constants.remix_native)}")
+    
+    # Test 2: USD availability 
+    print(f"2. USD libraries available: {USD_AVAILABLE}")
+    
+    # Test 3: Light utils availability
+    try:
+        from .light_utils import import_lights_from_usd
+        print(f"3. Light import function available: ✓")
+    except ImportError as e:
+        print(f"3. Light import function available: ✗ ({e})")
+    
+    # Test 4: Directory structure
+    import os
+    addon_dir = os.path.dirname(__file__)
+    
+    texconv_path = os.path.join(addon_dir, "bin", "texconv.exe")
+    cache_dir = os.path.join(addon_dir, "texture_cache")
+    native_so = os.path.join(addon_dir, "remix_native.so")
+    
+    print(f"4. texconv.exe exists: {os.path.exists(texconv_path)}")
+    print(f"5. texture_cache dir exists: {os.path.exists(cache_dir)}")
+    print(f"6. remix_native.so exists: {os.path.exists(native_so)}")
+    
+    # Test 5: Scene properties
+    try:
+        scene = bpy.context.scene
+        has_smooth_setting = hasattr(scene, 'remix_capture_apply_smooth_shading')
+        print(f"7. Smooth shading setting available: {has_smooth_setting}")
+        if has_smooth_setting:
+            print(f"   Current value: {scene.remix_capture_apply_smooth_shading}")
+    except Exception as e:
+        print(f"7. Smooth shading setting test failed: {e}")
+    
+    print("=== Integration Test Complete ===\n")
+    
+    return {
+        'native_loaded': constants.NATIVE_MODULE_LOADED,
+        'usd_available': USD_AVAILABLE,
+        'texconv_exists': os.path.exists(texconv_path),
+        'cache_dir_exists': os.path.exists(cache_dir),
+        'native_so_exists': os.path.exists(native_so),
+        'smooth_setting_available': hasattr(bpy.context.scene, 'remix_capture_apply_smooth_shading')
+    }
 
 
 # Keep the old functions for now but mark them as deprecated

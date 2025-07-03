@@ -93,6 +93,11 @@ def register_properties():
         description="Import light sources from captures",
         default=True,
     )
+    bpy.types.Scene.remix_capture_apply_smooth_shading = bpy.props.BoolProperty(
+        name="Apply Smooth Shading",
+        description="Automatically apply smooth shading to all imported meshes for better appearance",
+        default=True,
+    )
 
     # --- UIList Properties ---
     bpy.types.Scene.remix_captures = bpy.props.CollectionProperty(type=RemixCaptureListItem)
@@ -146,6 +151,8 @@ def unregister_properties():
         del bpy.types.Scene.remix_capture_import_materials
     if hasattr(bpy.types.Scene, "remix_capture_import_lights"):
         del bpy.types.Scene.remix_capture_import_lights
+    if hasattr(bpy.types.Scene, "remix_capture_apply_smooth_shading"):
+        del bpy.types.Scene.remix_capture_apply_smooth_shading
     if hasattr(bpy.types.Scene, "_remix_available_captures"):
         del bpy.types.Scene["_remix_available_captures"]
     if hasattr(bpy.types.Scene, "_remix_batch_selected_captures"):
