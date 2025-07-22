@@ -809,7 +809,27 @@ def export_light(operator, context, obj, sublayer_stage, project_root, target_su
     parent_prim_path = None
     if anchor_obj:
         # Get the stored original USD prim path from the anchor object
-        anchor_path_str = anchor_obj.get("usd_prim_path", None) 
+        anchor_path_str = anchor_obj.get("usd_prim_path", None)
+        
+        if anchor_obj.name.startswith('inst_') and anchor_path_str:
+            # Convert instance path to mesh data path
+            # Instance: inst_66AD28A6F1817512_0 -> Mesh: /RootNode/meshes/mesh_66AD28A6F1817512
+            instance_name = anchor_obj.name
+            
+            # Extract base name (remove numerical suffix)
+            base_name = instance_name
+            if '_' in instance_name:
+                parts = instance_name.rsplit('_', 1)
+                if parts[1].isdigit():
+                    base_name = parts[0]
+            
+            # Create mesh data path
+            mesh_data_name = base_name.replace("inst_", "mesh_")
+            resolved_anchor_path = f"/RootNode/meshes/{mesh_data_name}"
+            
+            print(f"  LIGHT ANCHOR RESOLUTION: Anchor '{anchor_obj.name}' resolved from '{anchor_path_str}' to '{resolved_anchor_path}'")
+            anchor_path_str = resolved_anchor_path
+        
         if anchor_path_str and isinstance(anchor_path_str, str) and anchor_path_str.startswith('/'):
              try:
                 anchor_path = Sdf.Path(anchor_path_str)
@@ -1526,7 +1546,29 @@ class ExportRemixAsset(Operator):
         
         if anchor_obj:
             # --- ANCHORED EXPORT (DEFINE NEW INSTANCE UNDER ANCHOR PATH, POSITIONED BY ANCHOR, WITH LOCAL OFFSET) ---
-            anchor_path_str = anchor_obj.get("usd_prim_path", None) 
+            anchor_path_str = anchor_obj.get("usd_prim_path", None)
+            
+            # CRITICAL FIX: If anchor object is an instance, resolve to mesh data path
+            # RTX Remix can only replace meshes, not instances
+            if anchor_obj.name.startswith('inst_') and anchor_path_str:
+                # Convert instance path to mesh data path
+                # Instance: inst_66AD28A6F1817512_0 -> Mesh: /RootNode/meshes/mesh_66AD28A6F1817512
+                instance_name = anchor_obj.name
+                
+                # Extract base name (remove numerical suffix)
+                base_name = instance_name
+                if '_' in instance_name:
+                    parts = instance_name.rsplit('_', 1)
+                    if parts[1].isdigit():
+                        base_name = parts[0]
+                
+                # Create mesh data path
+                mesh_data_name = base_name.replace("inst_", "mesh_")
+                resolved_anchor_path = f"/RootNode/meshes/{mesh_data_name}"
+                
+                print(f"  INSTANCE RESOLUTION: Anchor '{anchor_obj.name}' resolved from '{anchor_path_str}' to '{resolved_anchor_path}'")
+                anchor_path_str = resolved_anchor_path
+            
             if anchor_path_str and isinstance(anchor_path_str, str) and anchor_path_str.startswith('/'):
                 try:
                     parent_group_path = Sdf.Path(anchor_path_str) 

@@ -41,7 +41,7 @@ def register_properties():
     # Add Anchor Target property to Scene
     bpy.types.Scene.remix_anchor_object_target = bpy.props.PointerProperty(
         name="Remix Anchor Target",
-        description="Select an imported mesh object to anchor exported assets to (optional)",
+        description="Select an imported mesh object to anchor exported assets to (optional). Instance objects (inst_*) are automatically resolved to their underlying mesh data paths",
         type=bpy.types.Object,
         poll=poll_is_mesh_object # Reuse the same poll function
     )
