@@ -286,12 +286,14 @@ def export_material(blender_material, sublayer_stage, project_root, sublayer_pat
     from .. import core_utils
     texture_processor = core_utils.get_texture_processor()
     
+    # Always define textures_dir, regardless of texture processor availability
+    textures_dir = os.path.join(project_root, "rtx-remix", "textures")
+    
     if not texture_processor.is_available():
         print(f"  Skipping texture export: texconv.exe not found.")
         # Continue with constant values only
     else:
         # Ensure textures directory exists
-        textures_dir = os.path.join(project_root, "rtx-remix", "textures")
         try:
             os.makedirs(textures_dir, exist_ok=True)
         except OSError as e:
@@ -1671,6 +1673,7 @@ class ExportRemixAsset(Operator):
                         
                 except Exception as e:
                     self.report({'WARNING'}, f"Error processing anchor override for '{anchor_obj.name}' (path: {anchor_path_str}): {e}. Falling back to default export.")
+                    import traceback
                     traceback.print_exc() # Add traceback for debugging
                     anchor_obj = None # Force fallback to default non-anchored export
             else:

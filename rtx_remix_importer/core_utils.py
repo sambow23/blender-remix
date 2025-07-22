@@ -570,8 +570,19 @@ class TextureProcessor:
     def _find_texconv(self) -> Optional[str]:
         """Find texconv.exe in the addon directory."""
         addon_dir = os.path.dirname(__file__)
-        potential_path = os.path.join(addon_dir, "texconv", "texconv.exe")
-        return potential_path if os.path.exists(potential_path) else None
+        
+        # Check for texconv in bin directory (primary location)
+        texconv_path = os.path.join(addon_dir, "bin", "texconv.exe")
+        if os.path.exists(texconv_path):
+            return texconv_path
+        
+        # Fallback to native subdirectory
+        texconv_path = os.path.join(addon_dir, "native", "bin", "texconv.exe")
+        if os.path.exists(texconv_path):
+            return texconv_path
+        
+        # Final fallback - return None (system PATH will be tried elsewhere)
+        return None
     
     def is_available(self) -> bool:
         """Check if texture processing is available."""
@@ -697,16 +708,36 @@ class TextureProcessor:
                 os.makedirs(output_dir, exist_ok=True)
                 
                 # Run texconv on the entire batch
-                cmd = [
-                    self.texconv_path,
-                    *group_temp_files,  # All input files
-                    "-o", output_dir,
-                    "-ft", "dds",
-                    "-f", texconv_format,
-                    "-m", "0",  # Generate all mipmaps
-                    "-y",  # Overwrite existing
-                    "-nologo",
-                ]
+                import platform
+                if platform.system() == "Windows":
+                    cmd = [
+                        self.texconv_path,
+                        *group_temp_files,  # All input files
+                        "-o", output_dir,
+                        "-ft", "dds",
+                        "-f", texconv_format,
+                        "-m", "0",  # Generate all mipmaps
+                        "-y",  # Overwrite existing
+                        "-nologo",
+                    ]
+                else:
+                    # Linux/macOS - use Wine with Windows paths
+                    def linux_to_wine_path(path):
+                        """Convert Linux path to Wine Windows path"""
+                        return f"Z:{path.replace('/', '\\')}"
+                    
+                    wine_temp_files = [linux_to_wine_path(f) for f in group_temp_files]
+                    cmd = [
+                        "wine",
+                        linux_to_wine_path(self.texconv_path),
+                        *wine_temp_files,  # All input files with Wine paths
+                        "-o", linux_to_wine_path(output_dir),
+                        "-ft", "dds",
+                        "-f", texconv_format,
+                        "-m", "0",  # Generate all mipmaps
+                        "-y",  # Overwrite existing
+                        "-nologo",
+                    ]
                 
                 try:
                     result = subprocess.run(
@@ -946,16 +977,37 @@ class TextureProcessor:
                 
                 # Convert using texconv
                 texconv_format = self._format_map.get(dds_format, 'BC7_UNORM_SRGB')
-                cmd = [
-                    self.texconv_path,
-                    temp_input_path,
-                    "-o", output_dir,
-                    "-ft", "dds",
-                    "-f", texconv_format,
-                    "-m", "0",  # Generate all mipmaps
-                    "-y",  # Overwrite existing
-                    "-nologo",
-                ]
+                
+                # Check if we're on Windows or need to use Wine
+                import platform
+                if platform.system() == "Windows":
+                    cmd = [
+                        self.texconv_path,
+                        temp_input_path,
+                        "-o", output_dir,
+                        "-ft", "dds",
+                        "-f", texconv_format,
+                        "-m", "0",  # Generate all mipmaps
+                        "-y",  # Overwrite existing
+                        "-nologo",
+                    ]
+                else:
+                    # Linux/macOS - use Wine with Windows paths
+                    def linux_to_wine_path(path):
+                        """Convert Linux path to Wine Windows path"""
+                        return f"Z:{path.replace('/', '\\')}"
+                    
+                    cmd = [
+                        "wine",
+                        linux_to_wine_path(self.texconv_path),
+                        linux_to_wine_path(temp_input_path),
+                        "-o", linux_to_wine_path(output_dir),
+                        "-ft", "dds",
+                        "-f", texconv_format,
+                        "-m", "0",  # Generate all mipmaps
+                        "-y",  # Overwrite existing
+                        "-nologo",
+                    ]
                 
                 result = subprocess.run(
                     cmd, 
