@@ -157,26 +157,6 @@ class TextureExporter:
         self.sublayer_path = sublayer_path
         self.texture_processor = get_texture_processor()
         self.textures_dir = os.path.join(project_root, "rtx-remix", "textures")
-        
-        # Texture type suffixes
-        self.type_suffixes = {
-            'base color': ".a.rtex",
-            'normal': ".n.rtex", 
-            'roughness': ".r.rtex",
-            'metallic': ".m.rtex",
-            'emission': ".e.rtex",
-            'opacity': ".o.rtex"
-        }
-        
-        # DDS format mapping
-        self.format_map = {
-            'base color': 'BC7_UNORM_SRGB',
-            'normal': 'BC5_UNORM',
-            'roughness': 'BC4_UNORM',
-            'metallic': 'BC4_UNORM',
-            'emission': 'BC7_UNORM_SRGB',
-            'opacity': 'BC4_UNORM'
-        }
     
     async def export_textures_parallel(
         self,
@@ -213,12 +193,12 @@ class TextureExporter:
         for bl_image, texture_type in texture_list:
             # Generate output filename
             base_name, _ = os.path.splitext(bl_image.name)
-            type_suffix = self.type_suffixes.get(texture_type.lower(), "")
+            type_suffix = self.texture_processor.get_texture_suffix(texture_type)
             dds_file_name = f"{base_name}{type_suffix}.dds"
             absolute_dds_path = os.path.normpath(os.path.join(self.textures_dir, dds_file_name))
             
             # Get DDS format
-            dds_format = self.format_map.get(texture_type.lower(), 'BC7_UNORM_SRGB')
+            dds_format = self.texture_processor.get_recommended_format(texture_type)
             
             # Add to tasks
             task_info = (bl_image, absolute_dds_path, texture_type, dds_format)
@@ -293,12 +273,12 @@ class TextureExporter:
         
         # Generate output filename
         base_name, _ = os.path.splitext(bl_image.name)
-        type_suffix = self.type_suffixes.get(texture_type.lower(), "")
+        type_suffix = self.texture_processor.get_texture_suffix(texture_type)
         dds_file_name = f"{base_name}{type_suffix}.dds"
         absolute_dds_path = os.path.normpath(os.path.join(self.textures_dir, dds_file_name))
         
         # Get DDS format
-        dds_format = self.format_map.get(texture_type.lower(), 'BC7_UNORM_SRGB')
+        dds_format = self.texture_processor.get_recommended_format(texture_type)
         
         # Queue the conversion
         return await self.texture_processor.queue_texture_conversion(
