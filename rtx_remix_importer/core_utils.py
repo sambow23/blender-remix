@@ -1116,31 +1116,20 @@ class TextureProcessor:
     
     def _save_blender_image_to_file(self, bl_image: bpy.types.Image, filepath: str):
         """Save a Blender image to a file."""
-        scene = bpy.context.scene
-        render_settings = scene.render
-        
-        # Store original settings
-        orig_filepath = render_settings.filepath
-        orig_format = render_settings.image_settings.file_format
-        orig_color_mode = render_settings.image_settings.color_mode
-        orig_color_depth = render_settings.image_settings.color_depth
+        # Store original file format settings
+        orig_file_format = bl_image.file_format
         
         try:
-            # Set temporary render settings
-            render_settings.filepath = filepath
-            render_settings.image_settings.file_format = 'PNG'
-            render_settings.image_settings.color_mode = 'RGBA'
-            render_settings.image_settings.color_depth = '8'
+            # Set PNG format for export
+            bl_image.file_format = 'PNG'
             
-            # Save the image
-            bl_image.save_render(filepath=filepath, scene=scene)
+            # Save the image without color management transforms
+            # This preserves the raw image data in its current colorspace
+            bl_image.save(filepath=filepath)
             
         finally:
-            # Restore original settings
-            render_settings.filepath = orig_filepath
-            render_settings.image_settings.file_format = orig_format
-            render_settings.image_settings.color_mode = orig_color_mode
-            render_settings.image_settings.color_depth = orig_color_depth
+            # Restore original file format
+            bl_image.file_format = orig_file_format
 
     # Legacy method names for backward compatibility
     async def convert_texture_async(self, bl_image, output_path, dds_format='BC7_UNORM_SRGB', progress_callback=None):
