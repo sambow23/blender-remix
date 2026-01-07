@@ -36,7 +36,7 @@ class PT_RemixProjectPanel(bpy.types.Panel):
         
         # --- Button to apply mod file changes ---
         row_apply_changes = box.row(align=True)
-        row_apply_changes.operator(ApplyRemixModChanges.bl_idname, icon='FILE_TICK', text="Load mod.usda changes (EXPERIMENTAL)")
+        row_apply_changes.operator(ApplyRemixModChanges.bl_idname, icon='FILE_TICK', text="Load mod.usda Changes")
         # --- End Button ---
         
         # --- Sublayer Management --- 

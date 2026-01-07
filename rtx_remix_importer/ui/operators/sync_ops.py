@@ -8,12 +8,11 @@ from ...core_utils import (
     set_mesh_auto_smooth_compatible, 
     set_custom_normals_compatible
 )
+from .mod_loader import ModFileLoader, USD_AVAILABLE
 
 try:
     from pxr import Usd, Sdf, UsdGeom, UsdShade, Vt, UsdLux, Gf 
-    USD_AVAILABLE = True
 except ImportError:
-    USD_AVAILABLE = False
     Usd = None 
     Sdf = None
     UsdGeom = None 
@@ -77,6 +76,32 @@ class ApplyRemixModChanges(bpy.types.Operator):
         return False
 
     def execute(self, context):
+        if not USD_AVAILABLE:
+            self.report({'ERROR'}, "USD Python libraries (pxr) not available.")
+            return {'CANCELLED'}
+
+        mod_file_path = bpy.path.abspath(context.scene.remix_mod_file_path)
+        if not os.path.exists(mod_file_path):
+            self.report({'ERROR'}, f"Mod file not found: {mod_file_path}")
+            return {'CANCELLED'}
+
+        self.report({'INFO'}, f"Loading mod file changes from: {os.path.basename(mod_file_path)}")
+        
+        try:
+            # Use the new improved ModFileLoader
+            loader = ModFileLoader(context, self)
+            success = loader.load_mod_file(mod_file_path)
+            
+            return {'FINISHED'} if success else {'CANCELLED'}
+            
+        except Exception as e:
+            self.report({'ERROR'}, f"Error loading mod file: {e}")
+            import traceback
+            traceback.print_exc()
+            return {'CANCELLED'}
+    
+    # Keep the old implementation as fallback (commented for reference)
+    def execute_old(self, context):
         if not USD_AVAILABLE:
             self.report({'ERROR'}, "USD Python libraries (pxr) not available.")
             return {'CANCELLED'}

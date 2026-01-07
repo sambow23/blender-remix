@@ -88,20 +88,38 @@ def create_new_blender_light_from_mod(usd_light_prim, time_code_param, scene_sca
     bl_light_data_name = bl_light_name + "_data"
 
     bl_type = 'POINT' # Default
-    if usd_light_prim.IsA(UsdLux.SphereLight): bl_type = 'POINT'
-    elif usd_light_prim.IsA(UsdLux.RectLight): bl_type = 'AREA'
-    elif usd_light_prim.IsA(UsdLux.DistantLight): bl_type = 'SUN'
-    elif usd_light_prim.IsA(UsdLux.SpotLight): bl_type = 'SPOT'
-    elif usd_light_prim.IsA(UsdLux.DomeLight): 
+    
+    # Check light types safely (different USD versions have different schemas)
+    def safe_is_light_type(prim, type_name):
+        """Safely check if prim is a specific light type."""
+        if hasattr(UsdLux, type_name):
+            light_class = getattr(UsdLux, type_name)
+            try:
+                return prim.IsA(light_class)
+            except:
+                return False
+        return False
+    
+    if safe_is_light_type(usd_light_prim, 'SphereLight'): 
+        bl_type = 'POINT'
+    elif safe_is_light_type(usd_light_prim, 'RectLight'): 
+        bl_type = 'AREA'
+    elif safe_is_light_type(usd_light_prim, 'DistantLight'): 
+        bl_type = 'SUN'
+    elif safe_is_light_type(usd_light_prim, 'SpotLight'): 
+        bl_type = 'SPOT'
+    elif safe_is_light_type(usd_light_prim, 'DiskLight'): 
+        bl_type = 'POINT'
+    elif safe_is_light_type(usd_light_prim, 'DomeLight'): 
         report_fn({'INFO'}, f"USD DomeLight <{usd_light_prim.GetPath()}> mapped to Blender SUN light. For IBL, consider environment textures.")
         bl_type = 'SUN'
-    elif usd_light_prim.IsA(UsdLux.CylinderLight):
+    elif safe_is_light_type(usd_light_prim, 'CylinderLight'):
         report_fn({'INFO'}, f"USD CylinderLight <{usd_light_prim.GetPath()}> mapped to Blender AREA light (approximation).")
         bl_type = 'AREA'
-    elif usd_light_prim.IsA(UsdLux.PortalLight):
+    elif safe_is_light_type(usd_light_prim, 'PortalLight'):
         report_fn({'INFO'}, f"USD PortalLight <{usd_light_prim.GetPath()}> mapped to Blender AREA light.")
         bl_type = 'AREA'
-    elif usd_light_prim.IsA(UsdLux.DiskLight):
+    elif safe_is_light_type(usd_light_prim, 'DiskLight'):
         report_fn({'INFO'}, f"USD DiskLight <{usd_light_prim.GetPath()}> mapped to Blender POINT light with sphere shape.")
         bl_type = 'POINT'
     
@@ -117,8 +135,8 @@ def create_new_blender_light_from_mod(usd_light_prim, time_code_param, scene_sca
         bl_light_data.use_custom_color_temp = True
         bl_light_data.color_temperature = light_api.GetColorTemperatureAttr().Get(time_code_param)
     
-    if usd_light_prim.IsA(UsdLux.SphereLight):
-        sphere_light_api = UsdLux.SphereLight(usd_light_prim)
+    if safe_is_light_type(usd_light_prim, 'SphereLight'):
+        sphere_light_api = getattr(UsdLux, 'SphereLight')(usd_light_prim)
         # Set shape only if the attribute exists (newer Blender versions)
         if hasattr(bl_light_data, 'shape'):
             bl_light_data.shape = 'SPHERE'
@@ -126,8 +144,8 @@ def create_new_blender_light_from_mod(usd_light_prim, time_code_param, scene_sca
             bl_light_data.size = sphere_light_api.GetRadiusAttr().Get(time_code_param) * 2.0 * scene_scale_param if sphere_light_api.GetRadiusAttr().IsDefined() else 0.1 * scene_scale_param
         if sphere_light_api.GetTreatAsPointAttr().Get(time_code_param) and hasattr(bl_light_data, 'size'):
              bl_light_data.size = 0.0
-    elif usd_light_prim.IsA(UsdLux.RectLight):
-        rect_light_api = UsdLux.RectLight(usd_light_prim)
+    elif safe_is_light_type(usd_light_prim, 'RectLight'):
+        rect_light_api = getattr(UsdLux, 'RectLight')(usd_light_prim)
         # Set shape only if the attribute exists (newer Blender versions)
         if hasattr(bl_light_data, 'shape'):
             bl_light_data.shape = 'RECTANGLE'
@@ -135,14 +153,14 @@ def create_new_blender_light_from_mod(usd_light_prim, time_code_param, scene_sca
             bl_light_data.size = rect_light_api.GetWidthAttr().Get(time_code_param) * scene_scale_param if rect_light_api.GetWidthAttr().IsDefined() else 1.0 * scene_scale_param
         if hasattr(bl_light_data, 'size_y'):
             bl_light_data.size_y = rect_light_api.GetHeightAttr().Get(time_code_param) * scene_scale_param if rect_light_api.GetHeightAttr().IsDefined() else 1.0 * scene_scale_param
-    elif usd_light_prim.IsA(UsdLux.SpotLight):
-        spot_api = UsdLux.SpotLight(usd_light_prim)
+    elif safe_is_light_type(usd_light_prim, 'SpotLight'):
+        spot_api = getattr(UsdLux, 'SpotLight')(usd_light_prim)
         if hasattr(bl_light_data, 'spot_size'):
             bl_light_data.spot_size = math.radians(spot_api.GetShapingConeAngleAttr().Get(time_code_param)) if spot_api.GetShapingConeAngleAttr().IsDefined() else math.radians(45)
         if hasattr(bl_light_data, 'spot_blend'):
             bl_light_data.spot_blend = spot_api.GetShapingConeSoftnessAttr().Get(time_code_param) if spot_api.GetShapingConeSoftnessAttr().IsDefined() else 0.15
-    elif usd_light_prim.IsA(UsdLux.DiskLight):
-        disk_api = UsdLux.DiskLight(usd_light_prim)
+    elif safe_is_light_type(usd_light_prim, 'DiskLight'):
+        disk_api = getattr(UsdLux, 'DiskLight')(usd_light_prim)
         # Set shape only if the attribute exists (newer Blender versions)
         if hasattr(bl_light_data, 'shape'):
             bl_light_data.shape = 'DISK'
@@ -256,9 +274,17 @@ def create_mod_default_blender_material_util(name, report_fn):
     return mat, group_node
 
 def get_mod_input_value_util(shader_prim_instance, input_name_str):
-    shader_input = shader_prim_instance.GetInput(input_name_str)
-    if not shader_input or not shader_input.IsDefined() or not shader_input.HasValue(): return None
-    return shader_input.Get()
+    # Handle both UsdShade.Shader and raw Usd.Prim
+    if hasattr(shader_prim_instance, 'GetInput'):
+        # It's a UsdShade.Shader, use GetInput
+        shader_input = shader_prim_instance.GetInput(input_name_str)
+        if not shader_input or not shader_input.IsDefined() or not shader_input.HasValue(): return None
+        return shader_input.Get()
+    else:
+        # It's a raw prim, get attribute directly
+        attr = shader_prim_instance.GetAttribute(input_name_str)
+        if not attr or not attr.IsDefined() or not attr.HasValue(): return None
+        return attr.Get()
 
 def process_mod_input_util(usd_input_val, input_type_name, nodes, links, target_node, target_socket_name, 
                            texture_res_context_path, mod_file_path_for_tex, # For resolve_mod_material_asset_path_util
@@ -306,7 +332,9 @@ def process_mod_pbr_util(shader_prim_instance, bl_mat_instance, main_shader_node
         "Emissive Intensity": ["inputs:emissive_intensity", "emissive_intensity"],
     }
     base_y, y_off, spacing = main_shader_node_instance.location.y, 200, 250
-    material_usd_def_dir = os.path.dirname(shader_prim_instance.GetPrim().GetStage().GetRootLayer().realPath) # Dir of USD defining this shader\'s material
+    # Get the stage from the shader prim (works for both wrapped and raw)
+    shader_prim_obj = shader_prim_instance.GetPrim() if hasattr(shader_prim_instance, 'GetPrim') else shader_prim_instance
+    material_usd_def_dir = os.path.dirname(shader_prim_obj.GetStage().GetRootLayer().realPath) # Dir of USD defining this shader\'s material
     for grp_sock, usd_names in input_map.items():
         if not main_shader_node_instance.inputs.get(grp_sock): continue
         val, name_fnd = None, None
@@ -343,16 +371,55 @@ def process_mod_pbr_util(shader_prim_instance, bl_mat_instance, main_shader_node
 def create_mod_material_nodes_util(material_usd_path_str, current_mod_stage, 
                                    texture_res_context_path_p, mod_file_path_for_tex_p, report_fn):
     mat_prim = current_mod_stage.GetPrimAtPath(material_usd_path_str)
-    if not mat_prim or not mat_prim.IsA(UsdShade.Material): return None, None
+    if not mat_prim or not mat_prim.IsValid():
+        return None, None
+    
+    # For override-only files, IsA(Material) may fail, but we can still process it
+    # if it has the expected structure (Shader child)
+    is_material = mat_prim.IsA(UsdShade.Material)
+    has_shader_child = mat_prim.GetChild("Shader") is not None
+    
+    if not is_material and not has_shader_child:
+        return None, None
+    
     mat_name = bpy.path.clean_name(mat_prim.GetName() or os.path.basename(material_usd_path_str))
     bl_mat, main_node = create_mod_default_blender_material_util(f"{mat_name}_mod_override", report_fn)
-    surf_out = UsdShade.Material(mat_prim).GetSurfaceOutput()
-    if surf_out and surf_out.HasConnectedSource():
-        src_path = surf_out.GetConnectedSource()[0].GetPrim().GetPath()
-        shader_prim = UsdShade.Shader(current_mod_stage.GetPrimAtPath(src_path))
-        if shader_prim:
-            process_mod_pbr_util(shader_prim, bl_mat, main_node, 
-                                            texture_res_context_path_p, mod_file_path_for_tex_p, report_fn)
+    
+    # Try to get shader prim - either via surface output or direct child
+    shader_prim = None
+    if is_material:
+        surf_out = UsdShade.Material(mat_prim).GetSurfaceOutput()
+        if surf_out and surf_out.HasConnectedSource():
+            src_path = surf_out.GetConnectedSource()[0].GetPrim().GetPath()
+            shader_prim = UsdShade.Shader(current_mod_stage.GetPrimAtPath(src_path))
+    
+    # Fallback: Look for Shader child directly (common in override files)
+    if not shader_prim:
+        shader_child = mat_prim.GetChild("Shader")
+        if shader_child and shader_child.IsValid():
+            # For override files, wrapping with UsdShade.Shader may fail
+            # Try wrapping first, but fall back to raw prim
+            wrapped = UsdShade.Shader(shader_child)
+            # Check if the wrap worked by seeing if we can get inputs
+            if wrapped and wrapped.GetPrim().IsValid():
+                shader_prim = wrapped
+            else:
+                # Use raw prim - process_mod_pbr_util will handle it
+                shader_prim = shader_child
+    
+    if shader_prim:
+        report_fn({'INFO'}, f"  Processing shader for material {mat_name}")
+        # Check if shader has inputs (debug)
+        shader_prim_obj = shader_prim.GetPrim() if hasattr(shader_prim, 'GetPrim') else shader_prim
+        if shader_prim_obj:
+            authored_attrs = [attr.GetName() for attr in shader_prim_obj.GetAuthoredAttributes()]
+            report_fn({'INFO'}, f"  Shader has {len(authored_attrs)} authored attributes")
+        
+        process_mod_pbr_util(shader_prim, bl_mat, main_node, 
+                                        texture_res_context_path_p, mod_file_path_for_tex_p, report_fn)
+    else:
+        report_fn({'WARNING'}, f"  No shader found for material {mat_name}")
+    
     return bl_mat, main_node
 
 def get_or_create_mod_instance_material_util(base_material_usd_path, instance_prim_for_metadata, current_mod_stage, 
