@@ -221,7 +221,7 @@ class ModFileLoader:
     
     def _preload_textures_parallel(self, texture_paths: list):
         """Pre-load texture data in parallel."""
-        from concurrent.futures import ThreadPoolExePhase cutor
+        from concurrent.futures import ThreadPoolExecutor
         import time
         
         start_time = time.time()
