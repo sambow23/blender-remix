@@ -27,6 +27,16 @@ class ApplyRemixModChanges(bpy.types.Operator):
     bl_label = "Apply Mod File Changes"
     bl_options = {'REGISTER', 'UNDO'}
 
+    # Modal operator state
+    _timer = None
+    _loader = None
+    _prim_iterator = None
+    _changed_prims = None
+    _changed_materials = None
+    _total_prims = 0
+    _processed_count = 0
+    _processing_stage = None
+
     @classmethod
     def poll(cls, context):
         # Only allow if a mod file is loaded and USD is available
@@ -75,6 +85,69 @@ class ApplyRemixModChanges(bpy.types.Operator):
                 return False
         return False
 
+    def modal(self, context, event):
+        if event.type == 'TIMER':
+            # Time-based batching: process prims for max 5ms per tick to stay responsive
+            import time
+            start_time = time.time()
+            max_time_per_tick = 0.005  # 5 milliseconds
+            
+            if self._processing_stage == 'processing':
+                
+                while self._prim_iterator:
+                    try:
+                        prim_path = next(self._prim_iterator)
+                        prim = self._loader.stage.GetPrimAtPath(prim_path)
+                        
+                        if prim and prim.IsValid():
+                            self._loader._process_prim(prim)
+                        else:
+                            bl_object = self._loader.blender_object_map.get(prim_path)
+                            if bl_object:
+                                self._loader._update_material_only(prim_path, bl_object, self._changed_materials)
+                        
+                        self._processed_count += 1
+                        
+                        # Check if we've used our time budget
+                        if time.time() - start_time > max_time_per_tick:
+                            break
+                        
+                    except StopIteration:
+                        # Done processing
+                        self._processing_stage = 'finishing'
+                        break
+                
+                # Update status
+                progress = (self._processed_count / self._total_prims) * 100 if self._total_prims > 0 else 0
+                context.workspace.status_text_set(f"Processing mod: {self._processed_count}/{self._total_prims} ({progress:.0f}%)")
+                
+                return {'RUNNING_MODAL'}
+            
+            elif self._processing_stage == 'finishing':
+                # Cleanup and finish
+                self._cleanup(context)
+                
+                # Re-enable viewport
+                self._loader._enable_viewport_updates()
+                self._loader._report_statistics()
+                self._loader._refresh_viewport()
+                
+                self.report({'INFO'}, f"Successfully applied changes from mod.usda ({self._processed_count} prims)")
+                context.workspace.status_text_set(None)
+                
+                return {'FINISHED'}
+        
+        elif event.type == 'ESC':
+            # User cancelled
+            self._cleanup(context)
+            if self._loader:
+                self._loader._enable_viewport_updates()
+            self.report({'WARNING'}, "Operation cancelled by user")
+            context.workspace.status_text_set(None)
+            return {'CANCELLED'}
+        
+        return {'PASS_THROUGH'}
+    
     def execute(self, context):
         if not USD_AVAILABLE:
             self.report({'ERROR'}, "USD Python libraries (pxr) not available.")
@@ -88,11 +161,58 @@ class ApplyRemixModChanges(bpy.types.Operator):
         self.report({'INFO'}, f"Loading mod file changes from: {os.path.basename(mod_file_path)}")
         
         try:
-            # Use the new improved ModFileLoader
-            loader = ModFileLoader(context, self)
-            success = loader.load_mod_file(mod_file_path)
+            # Create loader and do initial setup (fast, non-blocking parts)
+            self._loader = ModFileLoader(context, self)
             
-            return {'FINISHED'} if success else {'CANCELLED'}
+            # Initialize stage
+            self._loader.mod_file_path = mod_file_path
+            self._loader.stage = Usd.Stage.Open(mod_file_path, Usd.Stage.LoadAll)
+            
+            if not self._loader.stage:
+                self.report({'ERROR'}, "Failed to open USD stage")
+                return {'CANCELLED'}
+            
+            # Setup
+            self._loader.xform_cache = UsdGeom.XformCache(self._loader.time_code)
+            stage_up = UsdGeom.GetStageUpAxis(self._loader.stage)
+            self._loader.up_axis_is_y = (stage_up == UsdGeom.Tokens.y)
+            
+            # Build object map
+            self._loader._build_object_map()
+            self.report({'INFO'}, f"Found {len(self._loader.blender_object_map)} existing objects")
+            
+            # Clear caches
+            mod_apply_utils.clear_mod_apply_caches()
+            
+            # Get changed prims
+            authored_layers = self._loader._get_layers_with_changes()
+            self._changed_prims, self._changed_materials = self._loader._get_changed_prims(authored_layers)
+            
+            self.report({'INFO'}, f"Found {len(self._changed_prims)} prim(s) with changes")
+            
+            # Skip texture pre-loading to avoid blocking - textures load on-demand
+            # texture_paths = self._loader._collect_texture_paths(self._changed_materials)
+            # if texture_paths:
+            #     self.report({'INFO'}, f"Pre-loading {len(texture_paths)} textures...")
+            #     self._loader._preload_textures_parallel(texture_paths)
+            
+            # Disable viewport updates for performance
+            self._loader._disable_viewport_updates()
+            
+            # Setup iterator for modal processing
+            self._prim_iterator = iter(self._changed_prims)
+            self._total_prims = len(self._changed_prims)
+            self._processed_count = 0
+            self._processing_stage = 'processing'
+            
+            # Setup modal timer (100Hz = 0.01s interval)
+            wm = context.window_manager
+            self._timer = wm.event_timer_add(0.01, window=context.window)
+            wm.modal_handler_add(self)
+            
+            context.workspace.status_text_set(f"Processing mod: 0/{self._total_prims}")
+            
+            return {'RUNNING_MODAL'}
             
         except Exception as e:
             self.report({'ERROR'}, f"Error loading mod file: {e}")
@@ -100,6 +220,12 @@ class ApplyRemixModChanges(bpy.types.Operator):
             traceback.print_exc()
             return {'CANCELLED'}
     
+    def _cleanup(self, context):
+        """Clean up modal operator resources."""
+        if self._timer:
+            context.window_manager.event_timer_remove(self._timer)
+            self._timer = None
+            
     # Keep the old implementation as fallback (commented for reference)
     def execute_old(self, context):
         if not USD_AVAILABLE:

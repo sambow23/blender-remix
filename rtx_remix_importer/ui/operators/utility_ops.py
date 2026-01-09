@@ -266,7 +266,7 @@ class ConvertModDDSToPNG(bpy.types.Operator):
                 return {'FINISHED'}
             
             dds_files = list(dds_files_to_convert)
-            print(f"Found {len(dds_files)} unique DDS files to convert")
+            print(f"Found {len(dds_files)} unique DDS files")
             
             # Step 2: Create converted directory in mod folder
             mod_dir = os.path.dirname(bpy.path.abspath(context.scene.remix_mod_file_path))
@@ -274,15 +274,44 @@ class ConvertModDDSToPNG(bpy.types.Operator):
             os.makedirs(converted_dir, exist_ok=True)
             print(f"Output directory: {converted_dir}")
             
-            # Step 3: Convert DDS files to PNG using unified TextureProcessor
-            def progress_callback(current, total, message):
-                print(f"Converting {current+1}/{total}: {message}")
+            # Step 3: Check which files already have PNGs and skip them
+            dds_files_needing_conversion = []
+            already_converted = []
             
-            converted_png_list = texture_processor.batch_convert_dds_to_png(
-                dds_files, 
-                converted_dir, 
-                progress_callback=progress_callback
-            )
+            for dds_file in dds_files:
+                base_name = os.path.splitext(os.path.basename(dds_file))[0]
+                png_path = os.path.join(converted_dir, f"{base_name}.png")
+                if os.path.exists(png_path):
+                    already_converted.append(dds_file)
+                else:
+                    dds_files_needing_conversion.append(dds_file)
+            
+            if already_converted:
+                print(f"Found {len(already_converted)} already-converted PNG(s), skipping re-conversion")
+            
+            if not dds_files_needing_conversion:
+                print(f"All {len(dds_files)} DDS files already have PNGs, skipping conversion")
+            else:
+                print(f"Converting {len(dds_files_needing_conversion)} new DDS file(s)")
+            
+            # Step 4: Convert DDS files to PNG using unified TextureProcessor
+            converted_png_list = []
+            
+            if dds_files_needing_conversion:
+                def progress_callback(current, total, message):
+                    print(f"Converting {current+1}/{total}: {message}")
+                
+                converted_png_list = texture_processor.batch_convert_dds_to_png(
+                    dds_files_needing_conversion, 
+                    converted_dir, 
+                    progress_callback=progress_callback
+                )
+            
+            # Add already-converted files to the list
+            for dds_file in already_converted:
+                base_name = os.path.splitext(os.path.basename(dds_file))[0]
+                png_path = os.path.join(converted_dir, f"{base_name}.png")
+                converted_png_list.append(png_path)
             
             successful_conversions = len(converted_png_list)
             failed_conversions = len(dds_files) - successful_conversions

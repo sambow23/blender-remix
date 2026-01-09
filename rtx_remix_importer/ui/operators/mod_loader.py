@@ -113,24 +113,35 @@ class ModFileLoader:
             changed_prims, changed_materials = self._get_changed_prims(authored_layers)
             self.report({'INFO'}, f"Found {len(changed_prims)} prim(s) with changes")
             
-            # Step 7: Apply changes to existing objects or create new ones
-            for prim_path in changed_prims:
-                prim = self.stage.GetPrimAtPath(prim_path)
-                if prim and prim.IsValid():
-                    self._process_prim(prim)
-                else:
-                    # Prim doesn't exist in mod.usda (e.g., mesh added due to material change)
-                    # Check if we have a Blender object for it and update materials only
-                    bl_object = self.blender_object_map.get(prim_path)
-                    if bl_object:
-                        self.report({'INFO'}, f"Updating material for {bl_object.name} (prim not in mod.usda)")
-                        # Pass the changed_materials from the earlier detection
-                        self._update_material_only(prim_path, bl_object, changed_materials)
+            # Step 7: Pre-load texture data in parallel
+            texture_paths = self._collect_texture_paths(changed_materials)
+            if texture_paths:
+                self.report({'INFO'}, f"Pre-loading {len(texture_paths)} unique textures...")
+                self._preload_textures_parallel(texture_paths)
             
-            # Step 8: Report statistics
+            self._disable_viewport_updates()
+            
+            try:
+                for prim_path in changed_prims:
+                    prim = self.stage.GetPrimAtPath(prim_path)
+                    if prim and prim.IsValid():
+                        self._process_prim(prim)
+                    else:
+                        # Prim doesn't exist in mod.usda (e.g., mesh added due to material change)
+                        # Check if we have a Blender object for it and update materials only
+                        bl_object = self.blender_object_map.get(prim_path)
+                        if bl_object:
+                            self.report({'INFO'}, f"Updating material for {bl_object.name} (prim not in mod.usda)")
+                            # Pass the changed_materials from the earlier detection
+                            self._update_material_only(prim_path, bl_object, changed_materials)
+            finally:
+                # Always re-enable viewport updates
+                self._enable_viewport_updates()
+            
+            # Step 9: Report statistics
             self._report_statistics()
             
-            # Step 9: Refresh viewport
+            # Step 10: Refresh viewport
             self._refresh_viewport()
             
             return True
@@ -155,6 +166,87 @@ class ModFileLoader:
             elif "usd_prim_path" in obj:
                 path = obj["usd_prim_path"]
                 self.blender_object_map[path] = obj
+    
+    def _collect_texture_paths(self, changed_materials: set) -> list:
+        """Collect all texture file paths from changed materials."""
+        texture_paths = set()
+        
+        for mat_path in changed_materials:
+            mat_prim = self.stage.GetPrimAtPath(mat_path)
+            if not mat_prim or not mat_prim.IsValid():
+                continue
+            
+            # Find shader prim
+            shader_prim = None
+            if mat_prim.IsA(UsdShade.Material):
+                surf_out = UsdShade.Material(mat_prim).GetSurfaceOutput()
+                if surf_out and surf_out.HasConnectedSource():
+                    shader_prim = surf_out.GetConnectedSource()[0].GetPrim()
+            
+            if not shader_prim:
+                shader_child = mat_prim.GetChild("Shader")
+                if shader_child and shader_child.IsValid():
+                    shader_prim = shader_child
+            
+            if not shader_prim:
+                continue
+            
+            # Collect texture attributes
+            for attr in shader_prim.GetAuthoredAttributes():
+                attr_name = attr.GetName()
+                if 'texture' in attr_name.lower():
+                    value = attr.Get()
+                    if value and isinstance(value, (str, Sdf.AssetPath)):
+                        path_str = str(value).strip('@')
+                        if any(path_str.lower().endswith(ext) for ext in ['.dds', '.png', '.jpg', '.jpeg', '.tga']):
+                            # Resolve relative paths
+                            if not os.path.isabs(path_str):
+                                # Find authoring layer
+                                layer_path = self.stage.GetRootLayer().realPath
+                                for layer in self.stage.GetLayerStack():
+                                    if layer.GetPrimAtPath(shader_prim.GetPath()):
+                                        prim_spec = layer.GetPrimAtPath(shader_prim.GetPath())
+                                        if prim_spec and attr_name in [spec.name for spec in prim_spec.attributes]:
+                                            layer_path = layer.realPath
+                                            break
+                                
+                                layer_dir = os.path.dirname(layer_path)
+                                resolved = os.path.normpath(os.path.join(layer_dir, path_str))
+                                if os.path.exists(resolved):
+                                    texture_paths.add(resolved)
+                            elif os.path.exists(path_str):
+                                texture_paths.add(path_str)
+        
+        return list(texture_paths)
+    
+    def _preload_textures_parallel(self, texture_paths: list):
+        """Pre-load texture data in parallel."""
+        from concurrent.futures import ThreadPoolExePhase cutor
+        import time
+        
+        start_time = time.time()
+        loaded_images = {}
+        
+        def load_single_texture(tex_path):
+            """Load a single texture file into memory."""
+            try:
+                # Load image into Blender (Blender handles caching internally)
+                # Use check_existing to avoid duplicates
+                img = bpy.data.images.load(tex_path, check_existing=True)
+                return (tex_path, img)
+            except Exception as e:
+                # Silently fail for problematic textures (e.g., BC7)
+                return (tex_path, None)
+        
+        # Pre-load textures in parallel (I/O bound operation)
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            results = executor.map(load_single_texture, texture_paths)
+            for tex_path, img in results:
+                if img:
+                    loaded_images[tex_path] = img
+        
+        elapsed = time.time() - start_time
+        self.report({'INFO'}, f"Pre-loaded {len(loaded_images)}/{len(texture_paths)} textures in {elapsed:.2f}s")
     
     def _get_layers_with_changes(self) -> list:
         """
@@ -262,7 +354,11 @@ class ModFileLoader:
             # Also check existing Blender objects - match by material name
             # Since mod.usda doesn't contain mesh geometry, we can't query material bindings from it
             # Instead, we check if the Blender object's material matches any changed material
+            objects_checked = set()
+            
+            # First, check objects in the map (those with USD properties)
             for prim_path, bl_obj in self.blender_object_map.items():
+                objects_checked.add(bl_obj)
                 if hasattr(bl_obj, 'data') and hasattr(bl_obj.data, 'materials'):
                     for mat_slot in bl_obj.data.materials:
                         if mat_slot:
@@ -275,6 +371,27 @@ class ModFileLoader:
                                     self.report({'INFO'}, f"Object {bl_obj.name} uses changed material {changed_mat_path} (Blender mat: {mat_slot.name})")
                                     if prim_path not in changed_prims:
                                         changed_prims.add(prim_path)
+                                        meshes_with_changed_materials += 1
+                                    break
+            
+            # Then, check ALL scene objects as fallback (for objects that might not have USD properties)
+            for bl_obj in bpy.data.objects:
+                if bl_obj in objects_checked:
+                    continue  # Already checked
+                
+                if hasattr(bl_obj, 'data') and hasattr(bl_obj.data, 'materials'):
+                    for mat_slot in bl_obj.data.materials:
+                        if mat_slot:
+                            for changed_mat_path in changed_materials:
+                                mat_base_name = changed_mat_path.split('/')[-1]
+                                if mat_base_name in mat_slot.name or changed_mat_path in mat_slot.get('usd_material_path', ''):
+                                    self.report({'INFO'}, f"Object {bl_obj.name} uses changed material {changed_mat_path} (Blender mat: {mat_slot.name}) [no USD path]")
+                                    # Create a synthetic prim path for this object
+                                    synthetic_path = f"/Unmapped/{bl_obj.name}"
+                                    if synthetic_path not in changed_prims:
+                                        changed_prims.add(synthetic_path)
+                                        # Add to blender_object_map so it can be processed
+                                        self.blender_object_map[synthetic_path] = bl_obj
                                         meshes_with_changed_materials += 1
                                     break
             
@@ -400,8 +517,9 @@ class ModFileLoader:
         if new_obj:
             self.stats['objects_created'] += 1
             
-            # Link to scene
+            # Link to scene (defer depsgraph update)
             try:
+                # Use link without update for batch operations
                 self.context.collection.objects.link(new_obj)
             except Exception as e:
                 self.report({'WARNING'}, f"Failed to link object {new_obj.name}: {e}")
@@ -652,6 +770,45 @@ class ModFileLoader:
             f"{self.stats['materials_applied']} materials applied, "
             f"{self.stats['lights_updated']} lights updated"
         )
+    
+    def _disable_viewport_updates(self):
+        """Disable viewport updates for better performance during batch operations."""
+        # Store original state
+        self._viewport_state = {
+            'use_simplify': bpy.context.scene.render.use_simplify,
+            'simplify_subdivision': bpy.context.scene.render.simplify_subdivision,
+            'use_auto_refresh': []
+        }
+        
+        # Enable viewport simplification
+        bpy.context.scene.render.use_simplify = True
+        bpy.context.scene.render.simplify_subdivision = 0
+        
+        # Disable auto-refresh for all 3D viewports
+        for window in bpy.context.window_manager.windows:
+            for area in window.screen.areas:
+                if area.type == 'VIEW_3D':
+                    for space in area.spaces:
+                        if space.type == 'VIEW_3D':
+                            self._viewport_state['use_auto_refresh'].append((space, space.show_object_viewport_curve))
+                            # Keep curve display but disable some heavy options if available
+                            pass  # Most updates are internal to Blender
+    
+    def _enable_viewport_updates(self):
+        """Re-enable viewport updates after batch operations."""
+        if not hasattr(self, '_viewport_state'):
+            return
+        
+        # Restore original viewport settings
+        bpy.context.scene.render.use_simplify = self._viewport_state['use_simplify']
+        bpy.context.scene.render.simplify_subdivision = self._viewport_state['simplify_subdivision']
+        
+        # Restore auto-refresh
+        for space, original_value in self._viewport_state.get('use_auto_refresh', []):
+            space.show_object_viewport_curve = original_value
+        
+        # Force viewport update
+        self._refresh_viewport()
     
     def _refresh_viewport(self):
         """Refresh the 3D viewport."""

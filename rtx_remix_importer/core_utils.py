@@ -1090,29 +1090,63 @@ class TextureProcessor:
         self,
         dds_files: List[str],
         output_dir: str,
-        progress_callback: Optional[Callable[[int, int, str], None]] = None
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        max_workers: int = 4
     ) -> List[str]:
         """Batch convert multiple DDS files to PNG."""
         if not self.is_available():
             return []
         
-        converted_files = []
         total_files = len(dds_files)
         
-        for i, dds_file in enumerate(dds_files):
+        if total_files > 3:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            import threading
+            
+            converted_files = []
+            progress_lock = threading.Lock()
+            completed_count = [0]
+            
+            def convert_single(dds_file):
+                base_name = os.path.splitext(os.path.basename(dds_file))[0]
+                output_path = os.path.join(output_dir, f"{base_name}.png")
+                success = self.convert_dds_to_png_sync(dds_file, output_path)
+                
+                with progress_lock:
+                    completed_count[0] += 1
+                    if progress_callback:
+                        progress_callback(completed_count[0] - 1, total_files, f"Converting {os.path.basename(dds_file)}")
+                
+                return output_path if success else None
+            
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [executor.submit(convert_single, dds_file) for dds_file in dds_files]
+                for future in as_completed(futures):
+                    result = future.result()
+                    if result:
+                        converted_files.append(result)
+            
             if progress_callback:
-                progress_callback(i, total_files, f"Converting {os.path.basename(dds_file)}")
+                progress_callback(total_files, total_files, "Batch conversion complete")
             
-            base_name = os.path.splitext(os.path.basename(dds_file))[0]
-            output_path = os.path.join(output_dir, f"{base_name}.png")
+            return converted_files
+        else:
+            # Sequential for small batches
+            converted_files = []
+            for i, dds_file in enumerate(dds_files):
+                if progress_callback:
+                    progress_callback(i, total_files, f"Converting {os.path.basename(dds_file)}")
+                
+                base_name = os.path.splitext(os.path.basename(dds_file))[0]
+                output_path = os.path.join(output_dir, f"{base_name}.png")
+                
+                if self.convert_dds_to_png_sync(dds_file, output_path):
+                    converted_files.append(output_path)
             
-            if self.convert_dds_to_png_sync(dds_file, output_path):
-                converted_files.append(output_path)
-        
-        if progress_callback:
-            progress_callback(total_files, total_files, "Batch conversion complete")
-        
-        return converted_files
+            if progress_callback:
+                progress_callback(total_files, total_files, "Batch conversion complete")
+            
+            return converted_files
     
     def _save_blender_image_to_file(self, bl_image: bpy.types.Image, filepath: str):
         """Save a Blender image to a file."""

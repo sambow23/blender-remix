@@ -99,6 +99,26 @@ class ImportCaptureFile(bpy.types.Operator):
     bl_label = "Import RTX Remix Capture"
     
     filepath: bpy.props.StringProperty(subtype="FILE_PATH")
+    
+    # Modal state
+    _timer = None
+    _importing = False
+
+    def modal(self, context, event):
+        if event.type == 'TIMER':
+            if not self._importing:
+                # Import finished
+                self._cleanup(context)
+                context.workspace.status_text_set(None)
+                return {'FINISHED'}
+            
+            return {'RUNNING_MODAL'}
+        
+        elif event.type == 'ESC':
+            # Can't really cancel mid-import, but acknowledge ESC
+            return {'RUNNING_MODAL'}
+        
+        return {'PASS_THROUGH'}
 
     def execute(self, context):
         if not self.filepath:
@@ -106,34 +126,57 @@ class ImportCaptureFile(bpy.types.Operator):
             return {'CANCELLED'}
 
         try:
-            # Clear material cache before import if desired
-            # clear_material_cache()
+            import threading
+            
+            # Start import in background thread
+            self._importing = True
+            
+            def do_import():
+                try:
+                    new_objects, new_lights, new_cameras, message = import_rtx_remix_usd_with_materials(
+                        context,
+                        self.filepath,
+                        import_materials=context.scene.remix_capture_import_materials,
+                        import_lights=context.scene.remix_capture_import_lights,
+                        scene_scale=context.scene.remix_capture_scene_scale
+                    )
 
-            new_objects, new_lights, new_cameras, message = import_rtx_remix_usd_with_materials(
-                context,
-                self.filepath,
-                import_materials=context.scene.remix_capture_import_materials,
-                import_lights=context.scene.remix_capture_import_lights,
-                scene_scale=context.scene.remix_capture_scene_scale
-            )
+                    if new_objects is not None:
+                        self.report({'INFO'}, f"Imported capture: {message}")
+                        if new_cameras:
+                            context.scene.remix_last_imported_camera = list(new_cameras)[0].name
+                    else:
+                        self.report({'ERROR'}, f"Failed to import capture: {message}")
 
-            if new_objects is not None:
-                self.report({'INFO'}, f"Imported capture: {message}")
-                # Store the name of the last imported camera if one exists
-                if new_cameras:
-                    context.scene.remix_last_imported_camera = list(new_cameras)[0].name
-            else:
-                self.report({'ERROR'}, f"Failed to import capture: {message}")
-                return {'CANCELLED'}
+                except USDImportError as e:
+                    self.report({'ERROR'}, str(e))
+                except Exception as e:
+                    self.report({'ERROR'}, f"An unexpected error occurred: {e}")
+                finally:
+                    self._importing = False
+            
+            import_thread = threading.Thread(target=do_import, daemon=True)
+            import_thread.start()
+            
+            # Setup modal timer
+            wm = context.window_manager
+            self._timer = wm.event_timer_add(0.1, window=context.window)
+            wm.modal_handler_add(self)
+            
+            import os
+            context.workspace.status_text_set(f"Importing {os.path.basename(self.filepath)}...")
+            
+            return {'RUNNING_MODAL'}
 
-        except USDImportError as e:
-            self.report({'ERROR'}, str(e))
-            return {'CANCELLED'}
         except Exception as e:
-            self.report({'ERROR'}, f"An unexpected error occurred: {e}")
+            self.report({'ERROR'}, f"Error starting import: {e}")
             return {'CANCELLED'}
-
-        return {'FINISHED'}
+    
+    def _cleanup(self, context):
+        """Clean up modal resources."""
+        if self._timer:
+            context.window_manager.event_timer_remove(self._timer)
+            self._timer = None
 
 
 class ClearCaptureList(bpy.types.Operator):
@@ -189,25 +232,40 @@ class BatchImportSelectedCaptures(bpy.types.Operator):
     bl_label = "Batch Import Selected"
     bl_options = {'REGISTER', 'UNDO'}
 
+    # Modal operator state
+    _timer = None
+    _captures_to_import = None
+    _current_index = 0
+    _total_count = 0
+    _imported_count = 0
+    _total_new_objects = None
+    _total_new_lights = None
+    _viewport_state = None
+
     @classmethod
     def poll(cls, context):
         return any(c.is_selected for c in context.scene.remix_captures)
 
-    def execute(self, context):
-        captures_to_import = [c for c in context.scene.remix_captures if c.is_selected]
-        
-        if not captures_to_import:
-            self.report({'ERROR'}, "No captures were selected for import.")
-            return {'CANCELLED'}
-
-        total_count = len(captures_to_import)
-        imported_count = 0
-        total_new_objects = set()
-        total_new_lights = set()
-
-        self.report({'INFO'}, f"Batch import started for {total_count} selected captures.")
-        
-        for capture in captures_to_import:
+    def modal(self, context, event):
+        if event.type == 'TIMER':
+            if self._current_index >= self._total_count:
+                # All captures imported, finish
+                self._cleanup(context)
+                
+                summary_message = f"Batch import complete. Imported {self._imported_count}/{self._total_count} captures. Created {len(self._total_new_objects)} objects and {len(self._total_new_lights)} lights."
+                self.report({'INFO'}, summary_message)
+                
+                context.workspace.status_text_set(None)
+                
+                # Clear selection after import
+                for capture in self._captures_to_import:
+                    capture.is_selected = False
+                
+                return {'FINISHED'}
+            
+            # Import one capture per tick
+            capture = self._captures_to_import[self._current_index]
+            
             try:
                 new_objects, new_lights, new_cameras, message = import_rtx_remix_usd_with_materials(
                     context,
@@ -217,22 +275,84 @@ class BatchImportSelectedCaptures(bpy.types.Operator):
                     scene_scale=context.scene.remix_capture_scene_scale
                 )
                 if new_objects is not None:
-                    total_new_objects.update(new_objects)
-                    total_new_lights.update(new_lights)
+                    self._total_new_objects.update(new_objects)
+                    self._total_new_lights.update(new_lights)
                     if new_cameras:
-                        # Store the name of the most recent camera from the last successful import
                         context.scene.remix_last_imported_camera = list(new_cameras)[0].name
-                    imported_count += 1
+                    self._imported_count += 1
                 else:
                     self.report({'WARNING'}, f"Could not import {capture.name}: {message}")
             except Exception as e:
                 self.report({'ERROR'}, f"Error importing {capture.name}: {e}")
-
-        summary_message = f"Batch import complete. Imported {imported_count}/{total_count} captures. Created {len(total_new_objects)} objects and {len(total_new_lights)} lights."
-        self.report({'INFO'}, summary_message)
-        
-        # Clear selection after import
-        for capture in captures_to_import:
-            capture.is_selected = False
             
-        return {'FINISHED'}
+            self._current_index += 1
+            
+            # Update progress
+            progress = (self._current_index / self._total_count) * 100
+            context.workspace.status_text_set(f"Importing captures: {self._current_index}/{self._total_count} ({progress:.0f}%)")
+            
+            return {'RUNNING_MODAL'}
+        
+        elif event.type == 'ESC':
+            # User cancelled
+            self._cleanup(context)
+            self.report({'WARNING'}, f"Batch import cancelled. Imported {self._imported_count}/{self._total_count} captures.")
+            context.workspace.status_text_set(None)
+            return {'CANCELLED'}
+        
+        return {'PASS_THROUGH'}
+
+    def execute(self, context):
+        self._captures_to_import = [c for c in context.scene.remix_captures if c.is_selected]
+        
+        if not self._captures_to_import:
+            self.report({'ERROR'}, "No captures were selected for import.")
+            return {'CANCELLED'}
+
+        self._total_count = len(self._captures_to_import)
+        self._current_index = 0
+        self._imported_count = 0
+        self._total_new_objects = set()
+        self._total_new_lights = set()
+
+        self.report({'INFO'}, f"Batch import started for {self._total_count} selected captures.")
+        
+        # Disable viewport updates for performance
+        self._disable_viewport_updates(context)
+        
+        # Setup modal timer
+        wm = context.window_manager
+        self._timer = wm.event_timer_add(0.1, window=context.window)  # 10Hz
+        wm.modal_handler_add(self)
+        
+        context.workspace.status_text_set(f"Importing captures: 0/{self._total_count}")
+        
+        return {'RUNNING_MODAL'}
+    
+    def _disable_viewport_updates(self, context):
+        """Disable viewport updates for better performance."""
+        self._viewport_state = {
+            'use_simplify': context.scene.render.use_simplify,
+            'simplify_subdivision': context.scene.render.simplify_subdivision,
+        }
+        context.scene.render.use_simplify = True
+        context.scene.render.simplify_subdivision = 0
+    
+    def _enable_viewport_updates(self, context):
+        """Re-enable viewport updates."""
+        if self._viewport_state:
+            context.scene.render.use_simplify = self._viewport_state['use_simplify']
+            context.scene.render.simplify_subdivision = self._viewport_state['simplify_subdivision']
+        
+        # Force viewport refresh
+        for area in context.screen.areas:
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
+    
+    def _cleanup(self, context):
+        """Clean up modal operator resources."""
+        if self._timer:
+            context.window_manager.event_timer_remove(self._timer)
+            self._timer = None
+        
+        self._enable_viewport_updates(context)
