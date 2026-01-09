@@ -358,13 +358,14 @@ class ModFileLoader:
             return
         
         # Create/update the material from mod.usda
-        mod_directory = os.path.dirname(self.mod_file_path)
+        mod_file_absolute = self.stage.GetRootLayer().realPath
+        mod_directory = os.path.dirname(mod_file_absolute)
         bl_material = mod_apply_utils.get_or_create_mod_instance_material_util(
             base_material_usd_path=material_path,
             instance_prim_for_metadata=None,
             current_mod_stage=self.stage,
             texture_res_context_path_p=mod_directory,
-            mod_file_path_for_tex_p=self.mod_file_path,
+            mod_file_path_for_tex_p=mod_file_absolute,
             mod_base_material_node_cache_param=self.base_material_node_cache,
             local_material_cache_param=self.material_cache,
             report_fn=self.report

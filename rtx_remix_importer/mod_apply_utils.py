@@ -173,9 +173,11 @@ def create_new_blender_light_from_mod(usd_light_prim, time_code_param, scene_sca
 
 # --- Material-related helpers ---
 # Caches and constants that will be module-level here
-_TEXTURE_CACHE_MOD_APPLY = {} # Specific cache for this module\'s texture loading
+_TEXTURE_CACHE_MOD_APPLY = {} # Specific cache for this module's texture loading
 _APERTURE_OPAQUE_NODE_GROUP_LOADED_MOD_APPLY = False # Specific flag
+_APERTURE_TRANSLUCENT_NODE_GROUP_LOADED_MOD_APPLY = False # Specific flag
 APERTURE_OPAQUE_NODE_GROUP_NAME_CONST = "Aperture Opaque" # Shared constant name
+APERTURE_TRANSLUCENT_NODE_GROUP_NAME_CONST = "Aperture Translucent" # Shared constant name
 
 def resolve_mod_material_asset_path_util(asset_path, texture_resolution_context_path_param, mod_file_path_param, report_fn):
     # texture_resolution_context_path_param is the primary base (e.g. project root for textures)
@@ -194,7 +196,7 @@ def resolve_mod_material_asset_path_util(asset_path, texture_resolution_context_
     
     mod_file_dir = os.path.dirname(mod_file_path_param)
     if mod_file_dir not in search_paths:
-        search_paths.insert(0, mod_file_dir) # Prioritize mod file\'s own directory and its assets/textures
+        search_paths.insert(0, mod_file_dir) # Prioritize mod file's own directory and its assets/textures
         search_paths.insert(1, os.path.join(mod_file_dir, "assets"))
         search_paths.insert(2, os.path.join(mod_file_dir, "textures"))
         search_paths.insert(3, os.path.join(mod_file_dir, "assets", "textures"))
@@ -255,36 +257,69 @@ def append_mod_aperture_opaque_node_group_util(report_fn):
         return None
     return bpy.data.node_groups.get(APERTURE_OPAQUE_NODE_GROUP_NAME_CONST)
 
-def create_mod_default_blender_material_util(name, report_fn):
+def append_mod_aperture_translucent_node_group_util(report_fn):
+    global _APERTURE_TRANSLUCENT_NODE_GROUP_LOADED_MOD_APPLY
+    if APERTURE_TRANSLUCENT_NODE_GROUP_NAME_CONST in bpy.data.node_groups:
+        return bpy.data.node_groups[APERTURE_TRANSLUCENT_NODE_GROUP_NAME_CONST]
+    if _APERTURE_TRANSLUCENT_NODE_GROUP_LOADED_MOD_APPLY: return None
+    
+    _APERTURE_TRANSLUCENT_NODE_GROUP_LOADED_MOD_APPLY = True
+    # Try to import from material_utils
+    try:
+        from . import material_utils
+        return material_utils.append_aperture_translucent_node_group()
+    except Exception as e:
+        report_fn({'ERROR'}, f"Failed to load Aperture Translucent node group: {e}")
+        return None
+
+def create_mod_default_blender_material_util(name, report_fn, is_translucent=False):
     mat = bpy.data.materials.new(name=name)
     mat.use_nodes = True
     nodes, links = mat.node_tree.nodes, mat.node_tree.links
     nodes.clear()
     output_node = nodes.new(type='ShaderNodeOutputMaterial')
     output_node.location = (300, 0)
-    aperture_group = append_mod_aperture_opaque_node_group_util(report_fn)
+    
+    if is_translucent:
+        aperture_group = append_mod_aperture_translucent_node_group_util(report_fn)
+        group_name = APERTURE_TRANSLUCENT_NODE_GROUP_NAME_CONST
+    else:
+        aperture_group = append_mod_aperture_opaque_node_group_util(report_fn)
+        group_name = APERTURE_OPAQUE_NODE_GROUP_NAME_CONST
+    
     if not aperture_group:
         bsdf = nodes.new(type='ShaderNodeBsdfPrincipled')
-        bsdf.location = (0,0); links.new(bsdf.outputs['BSDF'], output_node.inputs['Surface'])
+        bsdf.location = (0,0)
+        if is_translucent:
+            # Set up for transmission
+            if 'Transmission Weight' in bsdf.inputs:
+                bsdf.inputs['Transmission Weight'].default_value = 1.0
+            elif 'Transmission' in bsdf.inputs:
+                bsdf.inputs['Transmission'].default_value = 1.0
+        links.new(bsdf.outputs['BSDF'], output_node.inputs['Surface'])
         return mat, bsdf
-    group_node = nodes.new(type='ShaderNodeGroup'); group_node.node_tree = aperture_group
-    group_node.name = APERTURE_OPAQUE_NODE_GROUP_NAME_CONST; group_node.location = (0, 0)
+    
+    group_node = nodes.new(type='ShaderNodeGroup')
+    group_node.node_tree = aperture_group
+    group_node.name = group_name
+    group_node.location = (0, 0)
     if 'BSDF' in group_node.outputs: links.new(group_node.outputs['BSDF'], output_node.inputs['Surface'])
     if 'Displacement' in group_node.outputs: links.new(group_node.outputs['Displacement'], output_node.inputs['Displacement'])
     return mat, group_node
 
 def get_mod_input_value_util(shader_prim_instance, input_name_str):
     # Handle both UsdShade.Shader and raw Usd.Prim
+    # Returns tuple: (value, attribute) where attribute can be used to find authoring layer
     if hasattr(shader_prim_instance, 'GetInput'):
         # It's a UsdShade.Shader, use GetInput
         shader_input = shader_prim_instance.GetInput(input_name_str)
-        if not shader_input or not shader_input.IsDefined() or not shader_input.HasValue(): return None
-        return shader_input.Get()
+        if not shader_input or not shader_input.IsDefined() or not shader_input.HasValue(): return None, None
+        return shader_input.Get(), shader_input.GetAttr()
     else:
         # It's a raw prim, get attribute directly
         attr = shader_prim_instance.GetAttribute(input_name_str)
-        if not attr or not attr.IsDefined() or not attr.HasValue(): return None
-        return attr.Get()
+        if not attr or not attr.IsDefined() or not attr.HasValue(): return None, None
+        return attr.Get(), attr
 
 def process_mod_input_util(usd_input_val, input_type_name, nodes, links, target_node, target_socket_name, 
                            texture_res_context_path, mod_file_path_for_tex, # For resolve_mod_material_asset_path_util
@@ -320,35 +355,85 @@ def process_mod_input_util(usd_input_val, input_type_name, nodes, links, target_
 def process_mod_pbr_util(shader_prim_instance, bl_mat_instance, main_shader_node_instance, 
                                     texture_res_context_path_p, mod_file_path_for_tex_p, report_fn):
     nodes, links = bl_mat_instance.node_tree.nodes, bl_mat_instance.node_tree.links
-    input_map = {
-        "Albedo Color": ["inputs:diffuse_texture", "diffuse_texture", "diffuse_color_constant"],
-        "Opacity": ["inputs:opacity_texture", "opacity_texture", "opacity_constant", "inputs:opacity", "opacity"],
-        "Roughness": ["inputs:reflectionroughness_texture", "reflectionroughness_texture", "reflection_roughness_constant"],
-        "Metallic": ["inputs:metallic_texture", "metallic_texture", "metallic_constant"],
-        "Normal Map": ["inputs:normalmap_texture", "normalmap_texture"],
-        "Height Map": ["inputs:height_texture", "height_texture", "height_constant"],
-        "Enable Emission": ["inputs:enable_emission"],
-        "Emissive Color": ["inputs:emissive_mask_texture", "emissive_mask_texture", "emissive_color_constant"],
-        "Emissive Intensity": ["inputs:emissive_intensity", "emissive_intensity"],
-    }
+    
+    # Detect if this is a translucent material by checking node group type
+    is_translucent = (main_shader_node_instance.type == 'GROUP' and 
+                     main_shader_node_instance.node_tree and 
+                     APERTURE_TRANSLUCENT_NODE_GROUP_NAME_CONST in main_shader_node_instance.node_tree.name)
+    
+    if is_translucent:
+        # Translucent material input mapping
+        input_map = {
+            "Transmittance/Diffuse Albedo": ["inputs:transmittance_texture", "transmittance_texture", "inputs:transmittance_color", "transmittance_color"],
+            "IOR": ["inputs:ior_constant", "ior_constant"],
+            "Thin Walled": ["inputs:thin_walled", "thin_walled"],
+            "Thin Wall Thickness": ["inputs:thin_wall_thickness", "thin_wall_thickness"],
+            "Use Diffuse Layer": ["inputs:use_diffuse_layer", "use_diffuse_layer"],
+            "Transmittance Measurement Distance": ["inputs:transmittance_measurement_distance", "transmittance_measurement_distance"],
+            "Enable Emission": ["inputs:enable_emission"],
+            "Emissive Color": ["inputs:emissive_mask_texture", "emissive_mask_texture", "inputs:emissive_color", "emissive_color"],
+            "Emissive Intensity": ["inputs:emissive_intensity", "emissive_intensity"],
+            "Normal Map": ["inputs:normalmap_texture", "normalmap_texture"],
+        }
+    else:
+        # Standard opaque PBR input mapping
+        input_map = {
+            "Albedo Color": ["inputs:diffuse_texture", "diffuse_texture", "diffuse_color_constant"],
+            "Opacity": ["inputs:opacity_texture", "opacity_texture", "opacity_constant", "inputs:opacity", "opacity"],
+            "Roughness": ["inputs:reflectionroughness_texture", "reflectionroughness_texture", "reflection_roughness_constant"],
+            "Metallic": ["inputs:metallic_texture", "metallic_texture", "metallic_constant"],
+            "Normal Map": ["inputs:normalmap_texture", "normalmap_texture"],
+            "Height Map": ["inputs:height_texture", "height_texture", "height_constant"],
+            "Enable Emission": ["inputs:enable_emission"],
+            "Emissive Color": ["inputs:emissive_mask_texture", "emissive_mask_texture", "emissive_color_constant"],
+            "Emissive Intensity": ["inputs:emissive_intensity", "emissive_intensity"],
+        }
     base_y, y_off, spacing = main_shader_node_instance.location.y, 200, 250
     # Get the stage from the shader prim (works for both wrapped and raw)
     shader_prim_obj = shader_prim_instance.GetPrim() if hasattr(shader_prim_instance, 'GetPrim') else shader_prim_instance
-    material_usd_def_dir = os.path.dirname(shader_prim_obj.GetStage().GetRootLayer().realPath) # Dir of USD defining this shader\'s material
+    material_usd_def_dir = os.path.dirname(shader_prim_obj.GetStage().GetRootLayer().realPath) # Dir of USD defining this shader's material
     for grp_sock, usd_names in input_map.items():
         if not main_shader_node_instance.inputs.get(grp_sock): continue
-        val, name_fnd = None, None
+        val, attr, name_fnd = None, None, None
         for name in usd_names: 
-            val = get_mod_input_value_util(shader_prim_instance, name)
-            if val is not None: 
+            result = get_mod_input_value_util(shader_prim_instance, name)
+            if result[0] is not None: 
+                val, attr = result
                 name_fnd = name
                 break
         if val is not None:
-            is_n, is_nc = (grp_sock == "Normal Map"), grp_sock in ["Metallic", "Roughness", "Opacity", "Height Map", "Emissive Intensity"]
-            if process_mod_input_util(val, name_fnd, nodes, links, main_shader_node_instance, grp_sock, 
-                                      texture_res_context_path_p, mod_file_path_for_tex_p, 
-                                      (-400, base_y + y_off), is_n, is_nc, report_fn):
+            # Get the layer where this attribute was authored for correct texture path resolution
+            attr_layer_path = mod_file_path_for_tex_p  # Default fallback
+            if attr:
+                try:
+                    # Find the layer that authored this attribute
+                    stage = shader_prim_obj.GetStage()
+                    for layer in stage.GetLayerStack():
+                        if layer.GetPrimAtPath(shader_prim_obj.GetPath()):
+                            prim_spec = layer.GetPrimAtPath(shader_prim_obj.GetPath())
+                            if prim_spec and attr.GetName() in [spec.name for spec in prim_spec.attributes]:
+                                attr_layer_path = layer.realPath
+                                break
+                except:
+                    pass  # Use default if we can't find the layer
+            
+            # Use the layer where the attribute was authored
+            attr_layer_dir = os.path.dirname(attr_layer_path)
+            
+            is_n, is_nc = (grp_sock == "Normal Map"), grp_sock in ["Metallic", "Roughness", "Opacity", "Height Map", "Emissive Intensity", "Transmittance Measurement Distance"]
+            node_created = process_mod_input_util(val, name_fnd, nodes, links, main_shader_node_instance, grp_sock, 
+                                      attr_layer_dir, attr_layer_path, 
+                                      (-400, base_y + y_off), is_n, is_nc, report_fn)
+            if node_created:
                 y_off -= spacing
+            # Store translucent properties as custom material properties if socket doesn't exist
+            elif grp_sock in ["IOR", "Thin Walled", "Thin Wall Thickness", "Transmittance Measurement Distance"]:
+                prop_name = f"rtx_{grp_sock.lower().replace(' ', '_')}"
+                if isinstance(val, (float, int)):
+                    bl_mat_instance[prop_name] = float(val)
+                elif isinstance(val, bool):
+                    bl_mat_instance[prop_name] = val
+                report_fn({'INFO'}, f"  Stored {grp_sock} = {val} as custom property '{prop_name}'")
     # Handle alpha transparency - only connect if texture has meaningful alpha data
     from .texture_utils import has_meaningful_alpha
     op_s, alb_s = main_shader_node_instance.inputs.get("Opacity"), main_shader_node_instance.inputs.get("Albedo Color")
@@ -362,7 +447,8 @@ def process_mod_pbr_util(shader_prim_instance, bl_mat_instance, main_shader_node
             print(f"  Skipped alpha connection for '{alb_n.image.name}' - texture has uniform/no meaningful alpha data")
     em_c, em_i = main_shader_node_instance.inputs.get("Emissive Color"), main_shader_node_instance.inputs.get("Emissive Intensity")
     en_em = main_shader_node_instance.inputs.get("Enable Emission")
-    usd_en_em = get_mod_input_value_util(shader_prim_instance, "inputs:enable_emission")
+    usd_en_em_result = get_mod_input_value_util(shader_prim_instance, "inputs:enable_emission")
+    usd_en_em = usd_en_em_result[0] if usd_en_em_result else None
     expl_dis = isinstance(usd_en_em, bool) and not usd_en_em
     if em_c and em_i and em_c.is_linked and not em_i.is_linked and not expl_dis:
         if not (en_em and isinstance(en_em.default_value, (float, int, bool)) and not en_em.default_value) and em_i.default_value == 0.0: 
@@ -383,7 +469,28 @@ def create_mod_material_nodes_util(material_usd_path_str, current_mod_stage,
         return None, None
     
     mat_name = bpy.path.clean_name(mat_prim.GetName() or os.path.basename(material_usd_path_str))
-    bl_mat, main_node = create_mod_default_blender_material_util(f"{mat_name}_mod_override", report_fn)
+    
+    # Detect if this is a translucent material by checking for translucent-specific inputs
+    is_translucent = False
+    if mat_prim or has_shader_child:
+        test_shader = None
+        if has_shader_child:
+            test_shader = mat_prim.GetChild("Shader")
+        elif is_material:
+            surf_out = UsdShade.Material(mat_prim).GetSurfaceOutput()
+            if surf_out and surf_out.HasConnectedSource():
+                test_shader = surf_out.GetConnectedSource()[0].GetPrim()
+        
+        if test_shader and test_shader.IsValid():
+            # Check for translucent-specific attributes
+            for attr in test_shader.GetAuthoredAttributes():
+                attr_name = attr.GetName()
+                if 'transmittance' in attr_name.lower() or 'thin_walled' in attr_name.lower():
+                    is_translucent = True
+                    report_fn({'INFO'}, f"  Detected translucent material: {mat_name}")
+                    break
+    
+    bl_mat, main_node = create_mod_default_blender_material_util(f"{mat_name}_mod_override", report_fn, is_translucent)
     
     # Try to get shader prim - either via surface output or direct child
     shader_prim = None
@@ -508,6 +615,13 @@ def get_or_create_mod_instance_material_util(base_material_usd_path, instance_pr
                 "height_constant": "Height Map Scale", # Or if "Height M" is a direct constant height value
                 "inwards_displacement": "Inwards Displacement",
                 "outwards_displacement": "Outwards Displacement",
+                
+                # Translucent material properties
+                "transmittance_color": "Transmittance Color",
+                "transmittance_measurement_distance": "Transmittance Measurement Distance",
+                "ior_constant": "IOR",
+                "thin_walled": "Thin Walled",
+                "thin_wall_thickness": "Thin Wall Thickness",
             }
             applied_any_metadata = False
             for meta_key, meta_value in instance_metadata.items():
@@ -563,8 +677,9 @@ def get_or_create_mod_instance_material_util(base_material_usd_path, instance_pr
 
 # --- Utility to clear module-level caches if needed (e.g., before a new operator run) ---
 def clear_mod_apply_caches():
-    global _TEXTURE_CACHE_MOD_APPLY, _APERTURE_OPAQUE_NODE_GROUP_LOADED_MOD_APPLY
+    global _TEXTURE_CACHE_MOD_APPLY, _APERTURE_OPAQUE_NODE_GROUP_LOADED_MOD_APPLY, _APERTURE_TRANSLUCENT_NODE_GROUP_LOADED_MOD_APPLY
     _TEXTURE_CACHE_MOD_APPLY.clear()
     _APERTURE_OPAQUE_NODE_GROUP_LOADED_MOD_APPLY = False
+    _APERTURE_TRANSLUCENT_NODE_GROUP_LOADED_MOD_APPLY = False
     # _mod_base_material_node_cache is managed per-operator run by passing it as arg, so not cleared here.
-    print("Cleared mod apply utility caches (texture, node group loaded state).") 
+    print("Cleared mod apply utility caches (texture, node group loaded state).")
