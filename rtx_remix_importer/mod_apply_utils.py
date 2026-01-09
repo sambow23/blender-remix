@@ -313,8 +313,11 @@ def get_mod_input_value_util(shader_prim_instance, input_name_str):
     if hasattr(shader_prim_instance, 'GetInput'):
         # It's a UsdShade.Shader, use GetInput
         shader_input = shader_prim_instance.GetInput(input_name_str)
-        if not shader_input or not shader_input.IsDefined() or not shader_input.HasValue(): return None, None
-        return shader_input.Get(), shader_input.GetAttr()
+        if not shader_input: return None, None
+        # Get the underlying attribute to check if it's defined and has value
+        attr = shader_input.GetAttr()
+        if not attr or not attr.IsDefined() or not attr.HasValue(): return None, None
+        return shader_input.Get(), attr
     else:
         # It's a raw prim, get attribute directly
         attr = shader_prim_instance.GetAttribute(input_name_str)

@@ -28,6 +28,7 @@ from .operators.capture_ops import (
 from .operators.utility_ops import (
     ClearMaterialCache,
     FixBrokenTextures,
+    ConvertModDDSToPNG,
 )
 from .operators.camera_ops import (
     AlignViewToCamera,
@@ -73,6 +74,7 @@ operator_classes = [
     BatchImportSelectedCaptures,
     ClearMaterialCache,
     FixBrokenTextures,
+    ConvertModDDSToPNG,
     AlignViewToCamera,
 ]
 

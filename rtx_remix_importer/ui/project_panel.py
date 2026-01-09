@@ -39,6 +39,11 @@ class PT_RemixProjectPanel(bpy.types.Panel):
         row_apply_changes.operator(ApplyRemixModChanges.bl_idname, icon='FILE_TICK', text="Load mod.usda Changes")
         # --- End Button ---
         
+        # --- Button to convert DDS to PNG ---
+        row_convert_dds = box.row(align=True)
+        row_convert_dds.operator("remix.convert_mod_dds_to_png", icon='IMAGE_DATA', text="Convert DDS to PNG")
+        # --- End Button ---
+        
         # --- Sublayer Management --- 
         box_sublayers = layout.box()
         box_sublayers.label(text="Sublayer Management", icon='LINENUMBERS_ON')
