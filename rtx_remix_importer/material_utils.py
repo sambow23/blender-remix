@@ -452,6 +452,10 @@ def append_aperture_translucent_node_group():
 def create_default_blender_material(name):
     """Creates a Blender material using the custom 'Aperture Opaque' node group."""
     mat = bpy.data.materials.new(name=name)
+    try:
+        mat.id_properties_ensure()  # Blender 5.0+ requirement
+    except AttributeError:
+        pass  # Older Blender versions
     mat.use_nodes = True
     nodes = mat.node_tree.nodes
     links = mat.node_tree.links
@@ -494,6 +498,10 @@ def create_default_blender_material(name):
 def create_translucent_blender_material(name):
     """Creates a Blender material using the custom 'Aperture Translucent' node group."""
     mat = bpy.data.materials.new(name=name)
+    try:
+        mat.id_properties_ensure()  # Blender 5.0+ requirement
+    except AttributeError:
+        pass  # Older Blender versions
     mat.use_nodes = True
     nodes = mat.node_tree.nodes
     links = mat.node_tree.links

@@ -492,10 +492,6 @@ def create_blender_mesh_from_data(mesh_geom, child_prim, mesh_key_path_str):
     verts, faces, uvs_data, normals_data = mesh_geom
     bl_mesh_name = bpy.path.clean_name(child_prim.GetName()) + "_data"
     bl_mesh = bpy.data.meshes.new(name=bl_mesh_name)
-    
-    # Store original USD prim path
-    bl_mesh["usd_prim_path"] = mesh_key_path_str
-    print(f"    Stored 'usd_prim_path' = \"{mesh_key_path_str}\" on mesh data '{bl_mesh.name}'")
 
     # Create mesh from data
     bl_mesh.from_pydata(verts, [], faces)
@@ -511,6 +507,15 @@ def create_blender_mesh_from_data(mesh_geom, child_prim, mesh_key_path_str):
     bl_mesh.validate(verbose=False)
     if bl_mesh.polygons:
         bl_mesh.polygons.foreach_set('use_smooth', [True] * len(bl_mesh.polygons))
+    
+    # Store original USD prim path AFTER mesh is fully created (Blender 5.0+ requirement)
+    try:
+        bl_mesh.id_properties_ensure()  # Blender 5.0+ requirement
+    except AttributeError:
+        pass  # Older Blender versions don't have this method
+    
+    bl_mesh["usd_prim_path"] = mesh_key_path_str
+    print(f"    Stored 'usd_prim_path' = \"{mesh_key_path_str}\" on mesh data '{bl_mesh.name}'")
 
     return bl_mesh
 
