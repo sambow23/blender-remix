@@ -193,3 +193,11 @@ class PT_RemixProjectPanel(bpy.types.Panel):
             # Add Anchor selection to the Export settings
             row_anchor = box_export_settings.row()
             row_anchor.prop(scene, "remix_anchor_object_target")
+            
+            # Add Asset Directory Settings
+            box_export_settings.separator()
+            box_export_settings.label(text="Asset Directories", icon='FILE_FOLDER')
+            row_mesh_dir = box_export_settings.row()
+            row_mesh_dir.prop(scene, "remix_custom_mesh_dir")
+            row_texture_dir = box_export_settings.row()
+            row_texture_dir.prop(scene, "remix_custom_texture_dir")

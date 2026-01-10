@@ -76,6 +76,19 @@ def register_properties():
         default=False,
     )
     
+    # Add properties for custom asset export directories
+    bpy.types.Scene.remix_custom_mesh_dir = bpy.props.StringProperty(
+        name="Mesh Directory",
+        description="Custom directory for exported meshes (relative to mod root). Default: 'assets/ingested'",
+        default="assets/ingested",
+    )
+    
+    bpy.types.Scene.remix_custom_texture_dir = bpy.props.StringProperty(
+        name="Texture Directory",
+        description="Custom directory for exported textures (relative to mod root). Default: 'rtx-remix/textures'",
+        default="rtx-remix/textures",
+    )
+    
     # --- New Capture Properties ---
     bpy.types.Scene.remix_capture_folder_path = bpy.props.StringProperty(
         name="Capture Folder",
@@ -141,6 +154,10 @@ def unregister_properties():
         del bpy.types.Scene.remix_reuse_existing_textures
     if hasattr(bpy.types.Scene, "remix_hide_original_mesh"):
         del bpy.types.Scene.remix_hide_original_mesh
+    if hasattr(bpy.types.Scene, "remix_custom_mesh_dir"):
+        del bpy.types.Scene.remix_custom_mesh_dir
+    if hasattr(bpy.types.Scene, "remix_custom_texture_dir"):
+        del bpy.types.Scene.remix_custom_texture_dir
     # if hasattr(bpy.types.Scene, "_remix_loaded_sublayers"): # Clean up temp storage
     #     del bpy.types.Scene._remix_loaded_sublayers
     if hasattr(bpy.types.Scene, "_remix_sublayers_ordered"): # Clean up temp storage

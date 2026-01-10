@@ -327,8 +327,11 @@ def export_material(blender_material, sublayer_stage, project_root, sublayer_pat
         print(f"  Skipping texture export: texconv.exe not found.")
         # Continue with constant values only
     else:
-        # Ensure textures directory exists
-        textures_dir = os.path.join(project_root, "rtx-remix", "textures")
+        # Ensure textures directory exists - use custom directory from scene settings
+        from bpy import context as bpy_context
+        custom_texture_dir = bpy_context.scene.remix_custom_texture_dir or "rtx-remix/textures"
+        textures_dir = os.path.join(project_root, custom_texture_dir)
+        print(f"  Using texture directory: {custom_texture_dir}")
         try:
             os.makedirs(textures_dir, exist_ok=True)
         except OSError as e:
@@ -1333,14 +1336,21 @@ class ExportRemixAsset(Operator):
                     if isinstance(stored_material_path, str) and stored_material_path:
                         material_path = Sdf.Path(stored_material_path)
                     print(f"  Asset already processed, using existing file: {mesh_file_path}")
+                    print(f"  Using mesh directory: {context.scene.remix_custom_mesh_dir or 'assets/ingested'}")
+                    print(f"  Using texture directory: {context.scene.remix_custom_texture_dir or 'rtx-remix/textures'}")
 
         # --- Ensure Directories ---
-        remix_dir = os.path.join(project_root, "rtx-remix")
-        # Change meshes directory to assets/ingested to match reference format
-        ingested_dir = os.path.join(project_root, "assets", "ingested")
-        textures_dir = os.path.join(remix_dir, "textures") # Ensure textures dir exists too
+        # Use custom directories from scene settings
+        custom_mesh_dir = context.scene.remix_custom_mesh_dir or "assets/ingested"
+        custom_texture_dir = context.scene.remix_custom_texture_dir or "rtx-remix/textures"
+        
+        ingested_dir = os.path.join(project_root, custom_mesh_dir)
+        textures_dir = os.path.join(project_root, custom_texture_dir)
         os.makedirs(ingested_dir, exist_ok=True)
-        os.makedirs(textures_dir, exist_ok=True) # Create textures dir if needed
+        os.makedirs(textures_dir, exist_ok=True)
+        
+        print(f"  Using mesh directory: {custom_mesh_dir}")
+        print(f"  Using texture directory: {custom_texture_dir}")
 
         # --- Mesh File Path and Stage ---
         # For mesh replacements, use the mesh name from USD path or mesh data, not the instance name
