@@ -178,6 +178,9 @@ class PT_RemixProjectPanel(bpy.types.Panel):
             # Add Texture Reuse option
             row_texture_reuse = box_export_settings.row()
             row_texture_reuse.prop(scene, "remix_reuse_existing_textures")
+            # Add Hide Original Mesh option
+            row_hide_original = box_export_settings.row()
+            row_hide_original.prop(scene, "remix_hide_original_mesh")
             # Add Anchor selection to the Export settings
             row_anchor = box_export_settings.row()
-            row_anchor.prop(scene, "remix_anchor_object_target") 
+            row_anchor.prop(scene, "remix_anchor_object_target")

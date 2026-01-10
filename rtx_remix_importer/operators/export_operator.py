@@ -139,6 +139,40 @@ def ensure_mdl_files(project_root):
 
 # --- Material Export Helper ---
 
+def get_mesh_name_from_object(obj):
+    """Extract the proper mesh name from an object, handling USD paths and mesh data.
+    
+    Returns the mesh name (e.g., 'mesh_E151CDBC52C54D10') instead of instance name (e.g., 'inst_E151CDBC52C54D10_0').
+    """
+    if not obj:
+        return "Suzanne"
+    
+    mesh_name_to_use = obj.name  # Default fallback
+    
+    # First try to extract mesh name from USD instance path
+    if "usd_instance_path" in obj:
+        usd_path = obj["usd_instance_path"]
+        # Example path: /RootNode/meshes/mesh_E151CDBC52C54D10/inst_E151CDBC52C54D10_0
+        # We want: mesh_E151CDBC52C54D10
+        path_parts = usd_path.split('/')
+        if len(path_parts) >= 2:
+            # Get the parent of the instance (the mesh)
+            for i, part in enumerate(path_parts):
+                if part.startswith('mesh_'):
+                    mesh_name_to_use = part
+                    break
+    
+    # If not found in USD path and object is a mesh, use mesh data name
+    if mesh_name_to_use == obj.name and obj.type == 'MESH' and obj.data:
+        mesh_data_name = obj.data.name
+        # Strip _data suffix if present (common in Blender imports)
+        if mesh_data_name.endswith('_data'):
+            mesh_name_to_use = mesh_data_name[:-5]  # Remove '_data'
+        else:
+            mesh_name_to_use = mesh_data_name
+    
+    return mesh_name_to_use
+
 def export_material(blender_material, sublayer_stage, project_root, sublayer_path, parent_mesh_path=None, obj=None):
     """Exports a Blender material to the sublayer stage."""
     if not blender_material:
@@ -171,8 +205,11 @@ def export_material(blender_material, sublayer_stage, project_root, sublayer_pat
     if parent_mesh_path and sublayer_stage.GetPrimAtPath(parent_mesh_path):
         # NVIDIA Remix style - material under mesh
         xforms_path = parent_mesh_path.AppendPath("XForms")
-        mesh_name = sanitize_prim_name(obj.name) if obj else "Suzanne"
+        # Extract proper mesh name (not instance name) from object
+        mesh_name_raw = get_mesh_name_from_object(obj)
+        mesh_name = sanitize_prim_name(mesh_name_raw)
         mesh_path = xforms_path.AppendPath(mesh_name)
+        print(f"  Using mesh name '{mesh_name}' for material binding (extracted from object)")
         
         # Apply MaterialBindingAPI to mesh
         mesh_prim = sublayer_stage.OverridePrim(mesh_path)
@@ -1306,7 +1343,11 @@ class ExportRemixAsset(Operator):
         os.makedirs(textures_dir, exist_ok=True) # Create textures dir if needed
 
         # --- Mesh File Path and Stage ---
-        mesh_name_sanitized = sanitize_prim_name(obj.name)
+        # For mesh replacements, use the mesh name from USD path or mesh data, not the instance name
+        mesh_name_to_use = get_mesh_name_from_object(obj)
+        print(f"  Extracted mesh name: {mesh_name_to_use}")
+        
+        mesh_name_sanitized = sanitize_prim_name(mesh_name_to_use)
         # Change extension to .usda for easier debugging
         mesh_file_name = f"{mesh_name_sanitized}.usda"
         
@@ -1535,6 +1576,31 @@ class ExportRemixAsset(Operator):
                         self.report({'ERROR'}, f"Failed to override parent group at {parent_group_path}.")
                         return False
                     print(f"  Overriding parent group: {parent_group_path}")
+                    
+                    # Hide original mesh if option is enabled
+                    if context.scene.remix_hide_original_mesh:
+                        # Check if the anchor is a mesh prim (e.g., mesh_XXX) or an instance within it (e.g., mesh_XXX/inst_YYY_0)
+                        # Find the mesh prim by looking for the path segment starting with "mesh_"
+                        path_str = str(parent_group_path)
+                        path_parts = path_str.split('/')
+                        mesh_prim_path_str = None
+                        for i, part in enumerate(path_parts):
+                            if part.startswith('mesh_'):
+                                # Found the mesh level, reconstruct path up to this point
+                                mesh_prim_path_str = '/'.join(path_parts[:i+1])
+                                break
+                        
+                        if mesh_prim_path_str:
+                            mesh_prim_path = Sdf.Path(mesh_prim_path_str)
+                            over_mesh_prim = sublayer_stage.OverridePrim(mesh_prim_path)
+                            if over_mesh_prim:
+                                # Set references to None explicitly (not just clear)
+                                over_mesh_prim.GetReferences().SetReferences([])
+                                print(f"  Set references = None on {mesh_prim_path} (hiding original mesh)")
+                            else:
+                                print(f"  WARNING: Could not override mesh prim at {mesh_prim_path} to hide original")
+                        else:
+                            print(f"  WARNING: Could not find mesh prim in path {parent_group_path} to hide original")
 
                     new_instance_name = generate_uuid_name(sanitize_prim_name(obj.name), prefix="ref_") 
                     new_instance_path = parent_group_path.AppendPath(new_instance_name)
@@ -1584,8 +1650,11 @@ class ExportRemixAsset(Operator):
 
                     # 2. Inner override uses the RELATIVE transform between anchor and object, with direct relative coordinates (no coordinate system conversion).
                     internal_xforms_group_path = new_instance_path.AppendPath("XForms")
-                    internal_mesh_prim_name = sanitize_prim_name(obj.name) # Name of prim inside assets/ingested/...usda
+                    # Use mesh name, not instance name, for the override
+                    internal_mesh_name_raw = get_mesh_name_from_object(obj)
+                    internal_mesh_prim_name = sanitize_prim_name(internal_mesh_name_raw) # Name of prim inside assets/ingested/...usda
                     local_offset_prim_path = internal_xforms_group_path.AppendPath(internal_mesh_prim_name)
+                    print(f"  Using mesh name '{internal_mesh_prim_name}' for internal override (not instance name)")
 
                     over_internal_xforms_group = sublayer_stage.OverridePrim(internal_xforms_group_path)
                     if not over_internal_xforms_group: 

@@ -69,6 +69,13 @@ def register_properties():
         default=True,
     )
     
+    # Add property to control hiding original mesh on export
+    bpy.types.Scene.remix_hide_original_mesh = bpy.props.BoolProperty(
+        name="Hide Original Mesh",
+        description="Hide the original mesh by setting 'references = None' when exporting a replacement mesh",
+        default=False,
+    )
+    
     # --- New Capture Properties ---
     bpy.types.Scene.remix_capture_folder_path = bpy.props.StringProperty(
         name="Capture Folder",
@@ -132,6 +139,8 @@ def unregister_properties():
         del bpy.types.Scene.remix_auto_apply_transforms
     if hasattr(bpy.types.Scene, "remix_reuse_existing_textures"):
         del bpy.types.Scene.remix_reuse_existing_textures
+    if hasattr(bpy.types.Scene, "remix_hide_original_mesh"):
+        del bpy.types.Scene.remix_hide_original_mesh
     # if hasattr(bpy.types.Scene, "_remix_loaded_sublayers"): # Clean up temp storage
     #     del bpy.types.Scene._remix_loaded_sublayers
     if hasattr(bpy.types.Scene, "_remix_sublayers_ordered"): # Clean up temp storage
