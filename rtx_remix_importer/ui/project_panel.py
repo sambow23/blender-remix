@@ -70,21 +70,63 @@ class PT_RemixProjectPanel(bpy.types.Panel):
                 col.label(text=" (No sublayers found or project not loaded)", icon='ERROR')
             else:
                 active_path = scene.remix_active_sublayer_path
-                # Display sublayers in order
-                for i, (full_path, display_name, rel_path) in enumerate(sublayers_ordered):
-                    row = col.row(align=True)
-                    # Add indentation based on index? Or just a fixed indent?
-                    row.separator(factor=1.0) # Add some indentation
+                # Display sublayers in tree order with indentation
+                for i, sublayer_data in enumerate(sublayers_ordered):
+                    # Handle both dict format (new) and tuple formats (old) for compatibility
+                    # ID properties return dict-like objects, so check for 'get' method instead of isinstance
+                    if hasattr(sublayer_data, 'get') and callable(sublayer_data.get):
+                        # New dict format from ID properties
+                        # Note: ID properties may convert ints to strings, so we need to convert back
+                        full_path = sublayer_data.get('full_path', '')
+                        display_name = sublayer_data.get('display_name', '')
+                        rel_path = sublayer_data.get('rel_path', '')
+                        
+                        # Safe type conversion - handle both string and int
+                        depth_val = sublayer_data.get('depth', 0)
+                        depth = int(depth_val) if depth_val is not None else 0
+                        
+                        has_children_val = sublayer_data.get('has_children', False)
+                        # Convert string 'True'/'False' or bool to bool
+                        if isinstance(has_children_val, str):
+                            has_children = has_children_val.lower() in ('true', '1', 'yes')
+                        else:
+                            has_children = bool(has_children_val)
+                    elif len(sublayer_data) == 5:
+                        # Old 5-tuple format
+                        full_path, display_name, rel_path, depth, has_children = sublayer_data
+                    else:
+                        # Really old 3-tuple format fallback
+                        full_path, display_name, rel_path = sublayer_data[:3]
+                        depth = 0
+                        has_children = False
                     
-                    # Show Icon indicating if active
+                    row = col.row(align=True)
+                    
+                    # Add indentation based on depth (tree structure)
+                    if depth > 0:
+                        # Use smaller indentation factor to prevent excessive spacing
+                        row.separator(factor=depth * 0.5)  # 0.5 units per depth level
+                        # Add tree branch icon
+                        row.label(text="", icon='FORWARD')
+                    
+                    # Show Icon indicating if active (checkbox style)
                     icon = 'CHECKBOX_HLT' if full_path == active_path else 'CHECKBOX_DEHLT'
                     
-                    # Operator button to set this layer as active
-                    op = row.operator(SetTargetSublayer.bl_idname, text=display_name, icon=icon)
-                    op.sublayer_path = full_path 
+                    # Add folder icon if has children, file icon otherwise
+                    if has_children:
+                        tree_icon = 'OUTLINER_OB_GROUP_INSTANCE'
+                    else:
+                        tree_icon = 'FILE'
                     
-                    # Show relative path as well?
-                    # row.label(text=f"({rel_path})") # Maybe too cluttered
+                    # Operator button to set this layer as active
+                    # Show tree icon + name
+                    button_text = f"{display_name}"
+                    op = row.operator(SetTargetSublayer.bl_idname, text=button_text, icon=icon, emboss=True)
+                    op.sublayer_path = full_path
+                    
+                    # Add small tree icon at the end to indicate hierarchy
+                    if has_children:
+                        row.label(text="", icon=tree_icon)
 
             # --- Anchoring & Export --- 
             col.separator() 

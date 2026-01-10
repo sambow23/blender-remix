@@ -32,8 +32,24 @@ class LoadRemixProject(bpy.types.Operator):
             return {'CANCELLED'}
 
         mod_file_path = bpy.path.abspath(context.scene.remix_mod_file_path)
+        
+        # Check if path is a directory instead of a file
+        if os.path.isdir(mod_file_path):
+            # Try to find mod.usda in the directory
+            potential_mod = os.path.join(mod_file_path, "mod.usda")
+            if os.path.exists(potential_mod):
+                mod_file_path = potential_mod
+                self.report({'INFO'}, f"Using mod.usda from directory: {mod_file_path}")
+            else:
+                self.report({'ERROR'}, f"Path is a directory, not a file. Please select mod.usda: {mod_file_path}")
+                return {'CANCELLED'}
+        
         if not os.path.exists(mod_file_path):
             self.report({'ERROR'}, f"Mod file not found: {mod_file_path}")
+            return {'CANCELLED'}
+        
+        if not mod_file_path.lower().endswith(('.usda', '.usdc', '.usd')):
+            self.report({'ERROR'}, f"File must be a USD file (.usda, .usdc, or .usd): {mod_file_path}")
             return {'CANCELLED'}
         
         project_dir = os.path.dirname(mod_file_path)
@@ -49,28 +65,89 @@ class LoadRemixProject(bpy.types.Operator):
                 return {'CANCELLED'}
 
             root_layer = stage.GetRootLayer()
-            sublayer_paths_relative = root_layer.subLayerPaths
             
-            # Store ordered list of tuples: (full_path, display_name, relative_path)
-            ordered_sublayers = []
-            if not sublayer_paths_relative:
-                 print("No sublayers found in mod file.")
-            else:
-                for rel_path in sublayer_paths_relative:
-                    full_path = root_layer.ComputeAbsolutePath(rel_path) 
+            # Build a tree structure recursively
+            def scan_sublayers_recursive(layer, depth=0, visited=None):
+                """Recursively scan sublayers and build hierarchy.
+                
+                Returns list of tuples: (full_path, display_name, rel_path, depth, has_children)
+                """
+                if visited is None:
+                    visited = set()
+                
+                result = []
+                sublayer_paths = layer.subLayerPaths
+                
+                if not sublayer_paths:
+                    return result
+                
+                for rel_path in sublayer_paths:
+                    full_path = layer.ComputeAbsolutePath(rel_path)
                     if not full_path:
                         print(f"  WARNING: Could not resolve sublayer path: {rel_path}")
                         continue
+                    
+                    # Skip invalid paths (directories, empty, etc.)
+                    if not full_path.lower().endswith(('.usda', '.usdc', '.usd')):
+                        print(f"  WARNING: Skipping non-USD file: {full_path}")
+                        continue
+                    
+                    if not os.path.exists(full_path):
+                        print(f"  WARNING: Sublayer file not found: {full_path}")
+                        continue
+                    
+                    # Avoid infinite loops from circular references
+                    if full_path in visited:
+                        print(f"  WARNING: Circular reference detected for {full_path}")
+                        continue
+                    
+                    visited.add(full_path)
                     display_name = os.path.basename(full_path)
-                    ordered_sublayers.append((full_path, display_name, rel_path))
-                    print(f"  Found sublayer: {display_name} ({full_path}) - Ref: {rel_path}")
-
-            # Store the list in the scene using an ID property (simple storage)
-            context.scene["_remix_sublayers_ordered"] = ordered_sublayers
+                    
+                    # Try to open this sublayer to check if it has children
+                    child_layer = None
+                    has_children = False
+                    try:
+                        child_layer = Sdf.Layer.FindOrOpen(full_path)
+                        if child_layer and child_layer.subLayerPaths:
+                            has_children = True
+                    except Exception as e:
+                        print(f"  WARNING: Could not open sublayer {full_path}: {e}")
+                    
+                    # Add this layer to result
+                    result.append((full_path, display_name, rel_path, depth, has_children))
+                    print(f"  {'  ' * depth}Found sublayer: {display_name} (depth={depth})")
+                    
+                    # Recursively scan children if any
+                    if child_layer and has_children:
+                        children = scan_sublayers_recursive(child_layer, depth + 1, visited)
+                        result.extend(children)
+                
+                return result
+            
+            # Scan all sublayers recursively
+            ordered_sublayers = scan_sublayers_recursive(root_layer)
+            
+            if not ordered_sublayers:
+                print("No sublayers found in mod file.")
+            
+            # Convert to dict format for ID property storage (ID properties need dicts for complex data)
+            ordered_sublayers_as_dicts = []
+            for full_path, display_name, rel_path, depth, has_children in ordered_sublayers:
+                ordered_sublayers_as_dicts.append({
+                    'full_path': full_path,
+                    'display_name': display_name,
+                    'rel_path': rel_path,
+                    'depth': depth,
+                    'has_children': has_children
+                })
+            
+            # Store the hierarchical list in the scene
+            context.scene["_remix_sublayers_ordered"] = ordered_sublayers_as_dicts
             # Reset active sublayer path
             context.scene.remix_active_sublayer_path = ""
 
-            self.report({'INFO'}, f"Loaded {len(sublayer_paths_relative)} sublayers from {os.path.basename(mod_file_path)}")
+            self.report({'INFO'}, f"Loaded {len(ordered_sublayers)} total sublayers (including nested) from {os.path.basename(mod_file_path)}")
 
         except Exception as e:
             self.report({'ERROR'}, f"Failed to load project: {e}")
@@ -138,7 +215,21 @@ class CreateRemixSublayer(bpy.types.Operator):
         
         new_file_name = f"{file_name_base}.usda"
         project_dir = os.path.dirname(mod_file_path)
-        sublayers_dir = os.path.join(project_dir, "subUSDAs")
+        
+        # Determine where to create the new sublayer file
+        # Each sublayer gets its own directory named after itself
+        active_sublayer = context.scene.remix_active_sublayer_path
+        if active_sublayer and os.path.exists(active_sublayer):
+            # Create in a subdirectory next to the parent
+            # E.g., if active is base_mod/subUSDAs/replacements/replacements.usda
+            # Create in base_mod/subUSDAs/replacements/materials/materials.usda
+            parent_dir = os.path.dirname(active_sublayer)
+            sublayers_dir = os.path.join(parent_dir, file_name_base)
+        else:
+            # Create in root subUSDAs with own directory
+            # E.g., base_mod/subUSDAs/materials/materials.usda
+            sublayers_dir = os.path.join(project_dir, "subUSDAs", file_name_base)
+        
         new_sublayer_path = os.path.normpath(os.path.join(sublayers_dir, new_file_name))
 
         # Create subUSDAs directory if it doesn't exist
@@ -188,29 +279,41 @@ class CreateRemixSublayer(bpy.types.Operator):
             self.report({'ERROR'}, f"Failed to create new sublayer file {new_sublayer_path}: {e}")
             return {'CANCELLED'}
 
-        # Add reference to the main mod file
+        # Add reference to the active sublayer if one is selected, otherwise to the main mod file
         try:
-            mod_stage = Usd.Stage.Open(mod_file_path)
-            if not mod_stage:
-                 raise RuntimeError(f"Failed to open mod file {mod_file_path} to add sublayer.")
+            # Determine target file - use active sublayer if selected, otherwise mod file
+            active_sublayer = context.scene.remix_active_sublayer_path
+            if active_sublayer and os.path.exists(active_sublayer):
+                target_file = active_sublayer
+                target_name = os.path.basename(target_file)
+            else:
+                target_file = mod_file_path
+                target_name = os.path.basename(mod_file_path)
             
-            root_layer = mod_stage.GetRootLayer()
+            # Open the target layer
+            target_layer = Sdf.Layer.FindOrOpen(target_file)
+            if not target_layer:
+                raise RuntimeError(f"Failed to open target file {target_file} to add sublayer.")
             
-            # Calculate relative path from mod file to new sublayer
-            relative_path = os.path.relpath(new_sublayer_path, start=project_dir).replace('\\', '/')
+            # Calculate relative path from target file to new sublayer
+            target_dir = os.path.dirname(target_file)
+            relative_path = os.path.relpath(new_sublayer_path, start=target_dir).replace('\\', '/')
             # Ensure it starts with ./ if in the same directory or subdirs
             if not relative_path.startswith(".."):
                 relative_path = f"./{relative_path}"
 
             # Check if already present
-            current_sublayers = root_layer.subLayerPaths
+            current_sublayers = target_layer.subLayerPaths
             if relative_path in current_sublayers:
-                self.report({'INFO'}, f"Sublayer '{relative_path}' already exists in {os.path.basename(mod_file_path)}.")
+                self.report({'INFO'}, f"Sublayer '{relative_path}' already exists in {target_name}.")
             else:
-                root_layer.subLayerPaths.append(relative_path)
-                mod_stage.GetRootLayer().Save()
-                print(f"Added '{relative_path}' to sublayers in {os.path.basename(mod_file_path)}")
-                self.report({'INFO'}, f"Created and added sublayer '{new_file_name}'.")
+                target_layer.subLayerPaths.append(relative_path)
+                target_layer.Save()
+                print(f"Added '{relative_path}' to sublayers in {target_name}")
+                if active_sublayer:
+                    self.report({'INFO'}, f"Created and added sublayer '{new_file_name}' to {target_name}.")
+                else:
+                    self.report({'INFO'}, f"Created and added sublayer '{new_file_name}'.")
 
         except Exception as e:
              self.report({'ERROR'}, f"Failed to add sublayer reference to {mod_file_path}: {e}")
@@ -259,34 +362,46 @@ class AddRemixSublayer(bpy.types.Operator, bpy_extras.io_utils.ImportHelper):
              self.report({'ERROR'}, f"Selected file must be a .usda file: {existing_sublayer_path}")
              return {'CANCELLED'}
              
-        # Add reference to the main mod file
+        # Add reference to the active sublayer if one is selected, otherwise to the main mod file
         try:
-            mod_stage = Usd.Stage.Open(mod_file_path)
-            if not mod_stage:
-                 raise RuntimeError(f"Failed to open mod file {mod_file_path} to add sublayer.")
+            # Determine target file - use active sublayer if selected, otherwise mod file
+            active_sublayer = context.scene.remix_active_sublayer_path
+            if active_sublayer and os.path.exists(active_sublayer):
+                target_file = active_sublayer
+                target_name = os.path.basename(target_file)
+            else:
+                target_file = mod_file_path
+                target_name = os.path.basename(mod_file_path)
             
-            root_layer = mod_stage.GetRootLayer()
+            # Open the target layer
+            target_layer = Sdf.Layer.FindOrOpen(target_file)
+            if not target_layer:
+                raise RuntimeError(f"Failed to open target file {target_file} to add sublayer.")
             
-            # Calculate relative path from mod file to new sublayer
-            relative_path = os.path.relpath(existing_sublayer_path, start=project_dir).replace('\\', '/')
+            # Calculate relative path from target file to existing sublayer
+            target_dir = os.path.dirname(target_file)
+            relative_path = os.path.relpath(existing_sublayer_path, start=target_dir).replace('\\', '/')
             # Ensure it starts with ./ if in the same directory or subdirs
             if not relative_path.startswith(".."):
                 relative_path = f"./{relative_path}"
 
             # Check if already present
-            current_sublayers = root_layer.subLayerPaths
+            current_sublayers = target_layer.subLayerPaths
             if relative_path in current_sublayers:
-                self.report({'INFO'}, f"Sublayer '{relative_path}' already exists in {os.path.basename(mod_file_path)}. No changes made.")
+                self.report({'INFO'}, f"Sublayer '{relative_path}' already exists in {target_name}. No changes made.")
             else:
-                root_layer.subLayerPaths.append(relative_path)
-                mod_stage.GetRootLayer().Save()
-                print(f"Added '{relative_path}' to sublayers in {os.path.basename(mod_file_path)}")
-                self.report({'INFO'}, f"Added existing sublayer '{os.path.basename(existing_sublayer_path)}'.")
+                target_layer.subLayerPaths.append(relative_path)
+                target_layer.Save()
+                print(f"Added '{relative_path}' to sublayers in {target_name}")
+                if active_sublayer:
+                    self.report({'INFO'}, f"Added existing sublayer '{os.path.basename(existing_sublayer_path)}' to {target_name}.")
+                else:
+                    self.report({'INFO'}, f"Added existing sublayer '{os.path.basename(existing_sublayer_path)}'.")
                 # Refresh the UI list by calling the load operator
                 bpy.ops.remix.load_project()
 
         except Exception as e:
-             self.report({'ERROR'}, f"Failed to add sublayer reference to {mod_file_path}: {e}")
+             self.report({'ERROR'}, f"Failed to add sublayer reference: {e}")
              return {'CANCELLED'}
              
         return {'FINISHED'}
