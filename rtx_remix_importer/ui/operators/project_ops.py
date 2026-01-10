@@ -125,11 +125,18 @@ class LoadRemixProject(bpy.types.Operator):
                 
                 return result
             
-            # Scan all sublayers recursively
-            ordered_sublayers = scan_sublayers_recursive(root_layer)
+            # Scan all sublayers recursively starting at depth 1 (since root will be depth 0)
+            ordered_sublayers = scan_sublayers_recursive(root_layer, depth=1)
             
             if not ordered_sublayers:
                 print("No sublayers found in mod file.")
+            
+            # Add root mod.usda file to the beginning of the list at depth 0
+            root_display_name = os.path.basename(mod_file_path)
+            root_has_children = len(ordered_sublayers) > 0
+            
+            # Insert root file at the beginning with depth 0
+            ordered_sublayers.insert(0, (mod_file_path, root_display_name, "", 0, root_has_children))
             
             # Convert to dict format for ID property storage (ID properties need dicts for complex data)
             ordered_sublayers_as_dicts = []
@@ -219,20 +226,28 @@ class CreateRemixSublayer(bpy.types.Operator):
         # Determine where to create the new sublayer file
         # Each sublayer gets its own directory named after itself
         active_sublayer = context.scene.remix_active_sublayer_path
-        if active_sublayer and os.path.exists(active_sublayer):
-            # Create in a subdirectory next to the parent
-            # E.g., if active is base_mod/subUSDAs/replacements/replacements.usda
-            # Create in base_mod/subUSDAs/replacements/materials/materials.usda
+        
+        # Normalize paths for comparison
+        active_sublayer_normalized = os.path.normpath(active_sublayer) if active_sublayer else None
+        mod_file_normalized = os.path.normpath(mod_file_path)
+        
+        # Check if active is a sublayer (not the root mod.usda)
+        if (active_sublayer_normalized and 
+            os.path.exists(active_sublayer_normalized) and 
+            active_sublayer_normalized != mod_file_normalized):
+            # Create in a subdirectory next to the parent sublayer
+            # E.g., if active is base_mod/replacements/replacements.usda
+            # Create in base_mod/replacements/materials/materials.usda
             parent_dir = os.path.dirname(active_sublayer)
             sublayers_dir = os.path.join(parent_dir, file_name_base)
         else:
-            # Create in root subUSDAs with own directory
-            # E.g., base_mod/subUSDAs/materials/materials.usda
-            sublayers_dir = os.path.join(project_dir, "subUSDAs", file_name_base)
+            # Create in mod root directory with own directory
+            # E.g., base_mod/materials/materials.usda
+            sublayers_dir = os.path.join(project_dir, file_name_base)
         
         new_sublayer_path = os.path.normpath(os.path.join(sublayers_dir, new_file_name))
 
-        # Create subUSDAs directory if it doesn't exist
+        # Create sublayers directory if it doesn't exist
         try:
             os.makedirs(sublayers_dir, exist_ok=True)
         except OSError as e:

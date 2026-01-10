@@ -61,7 +61,7 @@ class PT_RemixProjectPanel(bpy.types.Panel):
         if scene.remix_mod_file_path:
             box_export = layout.box()
             col = box_export.column()
-            col.label(text="Sublayers (Strongest First)", icon='COLLAPSEMENU')
+            col.label(text="Sublayers (Lowest Depth First)", icon='COLLAPSEMENU')
 
             # Get the ordered list stored in the scene
             sublayers_ordered = scene.get("_remix_sublayers_ordered", [])
@@ -109,24 +109,45 @@ class PT_RemixProjectPanel(bpy.types.Panel):
                         # Add tree branch icon
                         row.label(text="", icon='FORWARD')
                     
-                    # Show Icon indicating if active (checkbox style)
-                    icon = 'CHECKBOX_HLT' if full_path == active_path else 'CHECKBOX_DEHLT'
-                    
-                    # Add folder icon if has children, file icon otherwise
-                    if has_children:
-                        tree_icon = 'OUTLINER_OB_GROUP_INSTANCE'
+                    # Determine icon based on active state
+                    if full_path == active_path:
+                        icon = 'RADIOBUT_ON'
                     else:
-                        tree_icon = 'FILE'
+                        icon = 'RADIOBUT_OFF'
                     
-                    # Operator button to set this layer as active
-                    # Show tree icon + name
+                    # Show tree icon + name with tooltip showing full relative path
                     button_text = f"{display_name}"
-                    op = row.operator(SetTargetSublayer.bl_idname, text=button_text, icon=icon, emboss=True)
+                    
+                    # Calculate relative path from mod directory for tooltip
+                    import os
+                    mod_file_path = bpy.path.abspath(scene.remix_mod_file_path)
+                    project_dir = os.path.dirname(mod_file_path)
+                    try:
+                        rel_path_from_mod = os.path.relpath(full_path, project_dir).replace('\\', '/')
+                    except (ValueError, TypeError):
+                        rel_path_from_mod = full_path
+                    
+                    # Create operator button - Blender will show the full path in status bar on hover
+                    op_row = row.row()
+                    op_row.alert = False
+                    # Set the row's tooltip/description by adding path info to button
+                    op = op_row.operator(SetTargetSublayer.bl_idname, text=button_text, icon=icon, emboss=True)
                     op.sublayer_path = full_path
                     
-                    # Add small tree icon at the end to indicate hierarchy
+                    # Show relative path as subtle text on the same row
+                    path_label = row.row()
+                    path_label.scale_x = 0.6  # Make it smaller
+                    path_label.enabled = False  # Gray it out
+                    path_label.label(text=f"({rel_path_from_mod})")
+                    
+                    # Add folder icon at the end if has children
                     if has_children:
-                        row.label(text="", icon=tree_icon)
+                        row.label(text="", icon='OUTLINER_OB_GROUP_INSTANCE')
+                    
+                    # Add depth level number at the end (right side) for all layers
+                    depth_label = row.row()
+                    depth_label.alignment = 'RIGHT'
+                    depth_label.label(text=f"Depth: {depth}")
 
             # --- Anchoring & Export --- 
             col.separator() 
@@ -135,36 +156,24 @@ class PT_RemixProjectPanel(bpy.types.Panel):
         if scene.remix_mod_file_path: # Only show if a project is loaded
             layout.separator()
             
-            # --- Material Exports Box ---
-            box_material_export = layout.box()
-            box_material_export.label(text="Material Exports", icon='MATERIAL')
+            # --- Material Export Button ---
+            row_material = layout.row()
+            row_material.scale_y = 1.5  # Make it slightly larger
+            row_material.enabled = bool(scene.remix_active_sublayer_path)
+            material_op = row_material.operator("export_scene.rtx_remix_asset", text="Export Selected Materials", icon='MATERIAL')
+            material_op.material_replacement_mode = True
             
-            # Material Replacement Export to mod.usda
-            row_material_mod = box_material_export.row()
-            row_material_mod.enabled = bool(scene.remix_mod_file_path) # Only enable if project is loaded
-            material_mod_op = row_material_mod.operator("export_scene.rtx_remix_mod_file", text="Export Selected to mod.usda", icon='FILE_REFRESH')
-            material_mod_op.material_replacement_mode = True
+            # --- Mesh/Light Export Button ---
+            row_mesh = layout.row()
+            row_mesh.scale_y = 1.5  # Make it slightly larger
+            row_mesh.enabled = bool(scene.remix_active_sublayer_path)
+            mesh_op = row_mesh.operator("export_scene.rtx_remix_asset", text="Export Selected Meshes/Lights", icon='EXPORT')
+            mesh_op.material_replacement_mode = False
             
-            # Material Export to Active Sublayer
-            row_material_sublayer = box_material_export.row()
-            row_material_sublayer.enabled = bool(scene.remix_active_sublayer_path) 
-            material_sublayer_op = row_material_sublayer.operator("export_scene.rtx_remix_asset", text="Export Selected to Active Sublayer", icon='MATERIAL')
-            material_sublayer_op.material_replacement_mode = True
-            
-            # --- Mesh/Light Exports Box ---
-            box_mesh_export = layout.box()
-            box_mesh_export.label(text="Mesh & Light Exports", icon='MESH_DATA')
-            
-            # Export to mod.usda
-            row_mesh_mod = box_mesh_export.row()
-            row_mesh_mod.enabled = bool(scene.remix_mod_file_path) # Only enable if project is loaded
-            hotload_op = row_mesh_mod.operator("export_scene.rtx_remix_mod_file", text="Export Selected to mod.usda", icon='FILE_REFRESH')
-            hotload_op.material_replacement_mode = False  # Explicitly set to False to ensure full export
-            
-            # Mesh/Light Export to Active Sublayer
-            row_mesh_sublayer = box_mesh_export.row()
-            row_mesh_sublayer.enabled = bool(scene.remix_active_sublayer_path) 
-            export_op = row_mesh_sublayer.operator("export_scene.rtx_remix_asset", text="Export Selected to Active Sublayer", icon='EXPORT')
+            if not scene.remix_active_sublayer_path:
+                # Show warning if no sublayer is selected
+                warning_row = layout.row()
+                warning_row.label(text="Select a layer to export", icon='INFO')
 
         # --- Export Settings ---
         if scene.remix_mod_file_path: # Only show if a project is loaded

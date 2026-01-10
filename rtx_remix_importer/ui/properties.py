@@ -40,7 +40,7 @@ def register_properties():
     )
     # Add Anchor Target property to Scene
     bpy.types.Scene.remix_anchor_object_target = bpy.props.PointerProperty(
-        name="Remix Anchor Target",
+        name="Target Mesh",
         description="Select an imported mesh object to anchor exported assets to (optional)",
         type=bpy.types.Object,
         poll=poll_is_mesh_object # Reuse the same poll function
@@ -71,7 +71,7 @@ def register_properties():
     
     # Add property to control hiding original mesh on export
     bpy.types.Scene.remix_hide_original_mesh = bpy.props.BoolProperty(
-        name="Hide Original Mesh",
+        name="Hide Target Mesh",
         description="Hide the original mesh by setting 'references = None' when exporting a replacement mesh",
         default=False,
     )
