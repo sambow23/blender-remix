@@ -792,7 +792,11 @@ def export_light(operator, context, obj, sublayer_stage, project_root, target_su
 
     if bl_light.type == 'POINT':
         usd_light_type = "SphereLight"
-        radius = bl_light.shadow_soft_size if bl_light.shadow_soft_size > 0 else 1.0
+        # Use shadow_soft_size, but clamp to reasonable range
+        # If it's 0 or outside 0.001-10 range, use 0.07 as default
+        radius = bl_light.shadow_soft_size
+        if radius <= 0 or radius < 0.001 or radius > 10:
+            radius = 0.07
         light_attrs["inputs:radius"] = float(radius)
         # Add default shaping for sphere lights
         shaping_attrs["shaping:cone:angle"] = 180.0
@@ -807,7 +811,11 @@ def export_light(operator, context, obj, sublayer_stage, project_root, target_su
         light_attrs["inputs:angle"] = float(bl_light.angle * 0.5 * 180.0 / 3.14159265)
     elif bl_light.type == 'SPOT':
         usd_light_type = "SphereLight"
-        radius = bl_light.shadow_soft_size if bl_light.shadow_soft_size > 0 else 1.0
+        # Use shadow_soft_size, but clamp to reasonable range
+        # If it's 0 or outside 0.001-10 range, use 0.07 as default
+        radius = bl_light.shadow_soft_size
+        if radius <= 0 or radius < 0.001 or radius > 10:
+            radius = 0.07
         light_attrs["inputs:radius"] = float(radius)
         # Use strings for shaping attributes (namespace already included)
         shaping_attrs["shaping:cone:angle"] = float(bl_light.spot_size * 0.5 * 180.0 / 3.14159265)
@@ -844,7 +852,33 @@ def export_light(operator, context, obj, sublayer_stage, project_root, target_su
 
     # --- Determine Parent Prim Path (Anchoring) --- 
     light_base_name = sanitize_prim_name(obj.name)
-    light_name_sanitized = generate_uuid_name(light_base_name, prefix="light_")
+    
+    # Check if this light has already been exported (has a stored USD path)
+    stored_light_path = obj.get("usd_light_path", None)
+    print(f"  Checking for stored light path: {stored_light_path}")
+    
+    if stored_light_path and isinstance(stored_light_path, str) and stored_light_path:
+        # Extract the name from the stored path
+        stored_name = stored_light_path.split('/')[-1]
+        # Check if the stored name starts with the current object's base name
+        # This handles duplicates (Point.001 won't match Point_uuid)
+        if stored_name.startswith(light_base_name + "_"):
+            # Light was already exported - reuse the existing name
+            light_name_sanitized = stored_name
+            print(f"  Light already exported - reusing existing name: {light_name_sanitized}")
+        else:
+            # Stored path is from a duplicate - generate new UUID
+            import uuid
+            light_uuid = uuid.uuid4().hex[:8]  # Short UUID
+            light_name_sanitized = f"{light_base_name}_{light_uuid}"
+            print(f"  Duplicate detected (stored: {stored_name}, current: {light_base_name}) - generating new name: {light_name_sanitized}")
+    else:
+        # First export - generate new UUID
+        import uuid
+        light_uuid = uuid.uuid4().hex[:8]  # Short UUID
+        light_name_sanitized = f"{light_base_name}_{light_uuid}"
+        print(f"  First export - generating new name: {light_name_sanitized}")
+    
     anchor_obj = context.scene.remix_anchor_object_target # Read anchor from Scene property
     parent_prim_path = None
     if anchor_obj:
@@ -1009,6 +1043,10 @@ def export_light(operator, context, obj, sublayer_stage, project_root, target_su
                 UsdShade.MaterialBindingAPI(light_prim).Bind(UsdShade.Material(sublayer_stage.GetPrimAtPath(material_path)), bindingStrength=UsdShade.Tokens.strongerThanDescendants)
                 print(f"  Bound material: {material_path} with strength")
 
+    # Store the USD light path on the Blender object for future updates
+    obj["usd_light_path"] = str(light_prim_path)
+    print(f"  Stored USD path on Blender object: {light_prim_path}")
+
     print(f"--- Finished Exporting Light: {obj.name} ---")
     return True
 
@@ -1016,6 +1054,7 @@ def export_light(operator, context, obj, sublayer_stage, project_root, target_su
 
 def _export_remix_objects(operator, context, target_filepath, selected_objects, material_replacement_mode=False):
     """Internal helper to export selected objects to a target USD file."""
+    # ... (rest of the code remains the same)
     if not USD_AVAILABLE:
         operator.report({'ERROR'}, "USD Python libraries (pxr) not available.")
         return False, 0, 0 # Indicate failure, success count, fail count

@@ -201,3 +201,89 @@ class PT_RemixProjectPanel(bpy.types.Panel):
             row_mesh_dir.prop(scene, "remix_custom_mesh_dir")
             row_texture_dir = box_export_settings.row()
             row_texture_dir.prop(scene, "remix_custom_texture_dir")
+
+        # --- Asset Management Section ---
+        if scene.remix_mod_file_path:
+            layout.separator()
+            box_assets = layout.box()
+            box_assets.label(text="Exported Assets", icon='OUTLINER_OB_MESH')
+            
+            # Scan button
+            row_scan = box_assets.row()
+            row_scan.operator("remix.scan_exported_assets", text="Scan Assets", icon='FILE_REFRESH')
+            
+            # Get exported assets
+            exported_assets = scene.get("_remix_exported_assets", [])
+            
+            if exported_assets:
+                # Filter to only show assets that are in the scene
+                assets_in_scene = [a for a in exported_assets if a.get('in_scene', False)]
+                
+                # Summary
+                total_count = len(exported_assets)
+                mesh_count = sum(1 for a in exported_assets if a.get('type') == 'MESH')
+                light_count = sum(1 for a in exported_assets if a.get('type') == 'LIGHT')
+                in_scene_count = len(assets_in_scene)
+                not_in_scene_count = total_count - in_scene_count
+                
+                summary_row = box_assets.row()
+                summary_row.label(text=f"Showing: {in_scene_count} | Not in Scene: {not_in_scene_count} ({mesh_count}M, {light_count}L total)")
+                
+                box_assets.separator()
+                
+                # Only show assets if there are any in the scene
+                if assets_in_scene:
+                    # Create scrollable column with max height
+                    col_assets = box_assets.column(align=True)
+                    
+                    # Limit the number of rows visible before scrolling
+                    max_rows = 10
+                    for idx, asset in enumerate(assets_in_scene[:max_rows * 5]):  # Allow many items but UI will scroll
+                        # Find the original index in the full list for the delete operator
+                        i = exported_assets.index(asset)
+                        
+                        asset_name = asset.get('name', 'Unknown')
+                        asset_type = asset.get('type', 'UNKNOWN')
+                        sublayer = asset.get('sublayer', '')
+                        in_scene = asset.get('in_scene', False)
+                        
+                        row = col_assets.row(align=True)
+                        
+                        # Icon based on type
+                        if asset_type == 'MESH':
+                            type_icon = 'MESH_DATA'
+                        elif asset_type == 'LIGHT':
+                            type_icon = 'LIGHT'
+                        else:
+                            type_icon = 'QUESTION'
+                        
+                        # Status icon
+                        if in_scene:
+                            status_icon = 'CHECKMARK'
+                            row.enabled = True
+                        else:
+                            status_icon = 'X'
+                            row.alert = True
+                        
+                        # Asset name label
+                        label_row = row.row()
+                        label_row.label(text=asset_name, icon=type_icon)
+                        
+                        # Sublayer label (smaller, grayed)
+                        sublayer_row = row.row()
+                        sublayer_row.scale_x = 0.6
+                        sublayer_row.enabled = False
+                        sublayer_row.label(text=f"({sublayer})")
+                        
+                        # Status
+                        status_row = row.row()
+                        status_row.alignment = 'RIGHT'
+                        status_row.label(text="", icon=status_icon)
+                        
+                        # Delete button
+                        delete_op = row.operator("remix.delete_exported_asset", text="", icon='TRASH')
+                        delete_op.asset_index = i
+                else:
+                    box_assets.label(text="All assets in scene - nothing to manage!", icon='CHECKMARK')
+            else:
+                box_assets.label(text="No assets found. Click 'Scan Assets' to refresh.", icon='INFO')

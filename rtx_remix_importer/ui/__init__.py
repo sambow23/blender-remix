@@ -33,6 +33,10 @@ from .operators.utility_ops import (
 from .operators.camera_ops import (
     AlignViewToCamera,
 )
+from .operators.asset_manager_ops import (
+    ScanExportedAssets,
+    DeleteExportedAsset,
+)
 from . import camera_menu
 from .project_panel import (
     PT_RemixProjectPanel,
@@ -76,6 +80,8 @@ operator_classes = [
     FixBrokenTextures,
     ConvertModDDSToPNG,
     AlignViewToCamera,
+    ScanExportedAssets,
+    DeleteExportedAsset,
 ]
 
 # List of all panel classes for registration
