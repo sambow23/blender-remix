@@ -842,13 +842,8 @@ def export_light(operator, context, obj, sublayer_stage, project_root, target_su
         operator.report({'WARNING'}, f"Unsupported light type '{bl_light.type}' for {obj.name}. Skipping.")
         return False
 
-    # Always export color and disable color temperature for now
-    light_attrs["inputs:enableColorTemperature"] = False
-    if "inputs:colorTemperature" in light_attrs: # Remove if somehow added previously
-        del light_attrs["inputs:colorTemperature"]
-    if "inputs:color" not in light_attrs: # Ensure color is present
+    if "inputs:color" not in light_attrs:
         light_attrs["inputs:color"] = Gf.Vec3f(bl_light.color[:])
-        print("  Exporting RGB color, color temperature disabled.")
 
     # --- Determine Parent Prim Path (Anchoring) --- 
     light_base_name = sanitize_prim_name(obj.name)
