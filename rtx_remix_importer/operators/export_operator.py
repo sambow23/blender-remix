@@ -529,7 +529,34 @@ def export_material(blender_material, sublayer_stage, project_root, sublayer_pat
     opacity_image, opacity_rel_path = None, None
     opacity_socket = principled_node.inputs.get('Alpha')
     if opacity_socket and opacity_socket.is_linked:
-        opacity_image, opacity_rel_path = find_texture_for_socket('Alpha', 'BC4_UNORM')
+        # Check if Alpha uses the SAME image as Base Color
+        # If so, alpha is embedded in diffuse texture - don't create separate opacity texture
+        alpha_uses_same_image = False
+        if diffuse_image and opacity_socket.is_linked:
+            # Trace the Alpha socket to find its image node
+            alpha_link = opacity_socket.links[0] if opacity_socket.links else None
+            if alpha_link:
+                alpha_node = alpha_link.from_node
+                # Follow links to find TEX_IMAGE node
+                while alpha_node and alpha_node.type != 'TEX_IMAGE':
+                    input_found = False
+                    for input_socket in alpha_node.inputs:
+                        if input_socket.is_linked:
+                            alpha_node = input_socket.links[0].from_node
+                            input_found = True
+                            break
+                    if not input_found:
+                        alpha_node = None
+                
+                # Check if it's the same image
+                if alpha_node and alpha_node.type == 'TEX_IMAGE' and alpha_node.image:
+                    if alpha_node.image == diffuse_image:
+                        alpha_uses_same_image = True
+                        print(f"  Alpha channel uses same image as Base Color - will be embedded in diffuse texture")
+        
+        # Only create separate opacity texture if it's a different image
+        if not alpha_uses_same_image:
+            opacity_image, opacity_rel_path = find_texture_for_socket('Alpha', 'BC4_UNORM')
 
     # Check for specular
     specular_image, specular_rel_path = None, None
@@ -735,17 +762,33 @@ def export_material(blender_material, sublayer_stage, project_root, sublayer_pat
             print(f"    Set emissive_intensity: {emissive_intensity}")
 
         # Opacity/Alpha handling
+        # Use blend states for alpha (NVIDIA toolkit approach)
+        alpha_socket = principled_node.inputs.get('Alpha')
+        has_alpha = False
+        
         if opacity_rel_path:
+            # Separate opacity texture (different from diffuse)
             shader_prim.CreateAttribute("inputs:opacity_texture", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(opacity_rel_path))
             print(f"    Set opacity_texture: {opacity_rel_path}")
-        else:
-            # Check for alpha value
-            alpha_socket = principled_node.inputs.get('Alpha')
-            if alpha_socket:
-                alpha_val = alpha_socket.default_value
-                if alpha_val < 1.0:  # Only set if not fully opaque
-                    shader_prim.CreateAttribute("inputs:opacity_constant", Sdf.ValueTypeNames.Float).Set(alpha_val)
-                    print(f"    Set opacity_constant: {alpha_val}")
+            has_alpha = True
+        elif alpha_socket and alpha_socket.is_linked and diffuse_image:
+            # Alpha is embedded in diffuse texture
+            print(f"    Alpha embedded in diffuse texture - enabling blend states")
+            has_alpha = True
+        elif alpha_socket and alpha_socket.default_value < 1.0:
+            # Constant alpha value
+            shader_prim.CreateAttribute("inputs:opacity_constant", Sdf.ValueTypeNames.Float).Set(alpha_socket.default_value)
+            print(f"    Set opacity_constant: {alpha_socket.default_value}")
+            has_alpha = True
+        
+        # Enable blend states if alpha is present (NVIDIA toolkit uses this instead of enable_opacity)
+        if has_alpha:
+            shader_prim.CreateAttribute("inputs:blend_enabled", Sdf.ValueTypeNames.Bool).Set(True)
+            shader_prim.CreateAttribute("inputs:blend_type", Sdf.ValueTypeNames.Int).Set(0)  # 0 = alpha blending
+            shader_prim.CreateAttribute("inputs:use_legacy_alpha_state", Sdf.ValueTypeNames.Bool).Set(False)
+            print(f"    Set blend_enabled: True")
+            print(f"    Set blend_type: 0 (alpha blending)")
+            print(f"    Set use_legacy_alpha_state: False")
 
         # Specular handling
         if specular_rel_path:

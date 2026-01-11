@@ -956,6 +956,15 @@ class TextureProcessor:
                     "-nologo",
                 ]
                 
+                # Add -sepalpha for formats that support alpha channels
+                # This is critical for BC7, BC3, BC2 to preserve alpha during mipmap generation
+                formats_with_alpha = ['BC7_UNORM', 'BC7_UNORM_SRGB', 'BC3_UNORM', 'BC3_UNORM_SRGB', 
+                                     'BC2_UNORM', 'BC2_UNORM_SRGB', 'BC1_UNORM', 'BC1_UNORM_SRGB']
+                if texconv_format in formats_with_alpha:
+                    cmd.append("-sepalpha")  # Resize/generate mips alpha channel separately from color channels
+                    if progress_callback:
+                        progress_callback(f"Using separate alpha processing for {texconv_format}")
+                
                 result = subprocess.run(
                     cmd, 
                     capture_output=True, 
@@ -998,158 +1007,15 @@ class TextureProcessor:
                         pass
                         
         except Exception as e:
+            import traceback
+            error_msg = f"Error: {e}\n{traceback.format_exc()}"
+            print(f"[TextureProcessor] Conversion failed for {bl_image.name}: {error_msg}")
             if progress_callback:
                 progress_callback(f"Error: {e}")
             return False
-    
-    def convert_dds_to_png_sync(
-        self,
-        dds_path: str,
-        output_path: str,
-        progress_callback: Optional[Callable[[str], None]] = None
-    ) -> bool:
-        """Convert DDS file to PNG format synchronously."""
-        if not self.is_available():
-            if progress_callback:
-                progress_callback("texconv.exe not found")
-            return False
-        
-        try:
-            if progress_callback:
-                progress_callback(f"Converting {os.path.basename(dds_path)} to PNG...")
-            
-            # Create output directory
-            output_dir = os.path.dirname(output_path)
-            os.makedirs(output_dir, exist_ok=True)
-            
-            # Convert DDS to PNG using texconv
-            cmd = [
-                self.texconv_path,
-                dds_path,
-                "-o", output_dir,
-                "-ft", "png",
-                "-y",  # Overwrite existing
-                "-nologo",
-            ]
-            
-            result = subprocess.run(
-                cmd, 
-                capture_output=True, 
-                text=True, 
-                check=False, 
-                shell=False,
-                timeout=30
-            )
-            
-            if result.returncode != 0:
-                if progress_callback:
-                    progress_callback(f"texconv failed: {result.stderr}")
-                return False
-            
-            # Handle texconv output file naming
-            original_name = os.path.splitext(os.path.basename(dds_path))[0]
-            texconv_output = os.path.join(output_dir, f"{original_name}.png")
-            
-            if os.path.exists(texconv_output):
-                # Rename to final output path if different
-                if texconv_output != output_path:
-                    os.replace(texconv_output, output_path)
-                
-                if progress_callback:
-                    progress_callback("Conversion complete")
-                return True
-            else:
-                if progress_callback:
-                    progress_callback("texconv output file not found")
-                return False
-                
-        except Exception as e:
-            if progress_callback:
-                progress_callback(f"Error: {e}")
-            return False
-    
-    async def convert_dds_to_png_async(
-        self,
-        dds_path: str,
-        output_path: str,
-        progress_callback: Optional[Callable[[str], None]] = None
-    ) -> bool:
-        """Convert DDS file to PNG format asynchronously."""
-        if not self.is_available():
-            if progress_callback:
-                progress_callback("texconv.exe not found")
-            return False
-        
-        def _convert():
-            return self.convert_dds_to_png_sync(dds_path, output_path, progress_callback)
-        
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(get_thread_pool(), _convert)
-    
-    def batch_convert_dds_to_png(
-        self,
-        dds_files: List[str],
-        output_dir: str,
-        progress_callback: Optional[Callable[[int, int, str], None]] = None,
-        max_workers: int = 4
-    ) -> List[str]:
-        """Batch convert multiple DDS files to PNG."""
-        if not self.is_available():
-            return []
-        
-        total_files = len(dds_files)
-        
-        if total_files > 3:
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-            import threading
-            
-            converted_files = []
-            progress_lock = threading.Lock()
-            completed_count = [0]
-            
-            def convert_single(dds_file):
-                base_name = os.path.splitext(os.path.basename(dds_file))[0]
-                output_path = os.path.join(output_dir, f"{base_name}.png")
-                success = self.convert_dds_to_png_sync(dds_file, output_path)
-                
-                with progress_lock:
-                    completed_count[0] += 1
-                    if progress_callback:
-                        progress_callback(completed_count[0] - 1, total_files, f"Converting {os.path.basename(dds_file)}")
-                
-                return output_path if success else None
-            
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = [executor.submit(convert_single, dds_file) for dds_file in dds_files]
-                for future in as_completed(futures):
-                    result = future.result()
-                    if result:
-                        converted_files.append(result)
-            
-            if progress_callback:
-                progress_callback(total_files, total_files, "Batch conversion complete")
-            
-            return converted_files
-        else:
-            # Sequential for small batches
-            converted_files = []
-            for i, dds_file in enumerate(dds_files):
-                if progress_callback:
-                    progress_callback(i, total_files, f"Converting {os.path.basename(dds_file)}")
-                
-                base_name = os.path.splitext(os.path.basename(dds_file))[0]
-                output_path = os.path.join(output_dir, f"{base_name}.png")
-                
-                if self.convert_dds_to_png_sync(dds_file, output_path):
-                    converted_files.append(output_path)
-            
-            if progress_callback:
-                progress_callback(total_files, total_files, "Batch conversion complete")
-            
-            return converted_files
     
     def _save_blender_image_to_file(self, bl_image: bpy.types.Image, filepath: str):
-        """Save a Blender image to a file."""
+        """Save a Blender image to a file with alpha channel preserved."""
         # Store original file format settings
         orig_file_format = bl_image.file_format
         
@@ -1157,8 +1023,30 @@ class TextureProcessor:
             # Set PNG format for export
             bl_image.file_format = 'PNG'
             
-            # Save the image without color management transforms
-            # This preserves the raw image data in its current colorspace
+            # Use scene render settings to ensure RGBA with 16-bit depth
+            scene = bpy.context.scene
+            orig_color_mode = scene.render.image_settings.color_mode
+            orig_color_depth = scene.render.image_settings.color_depth
+            orig_compression = scene.render.image_settings.compression
+            
+            # Set RGBA mode with 16-bit depth to preserve alpha precision
+            scene.render.image_settings.color_mode = 'RGBA'
+            scene.render.image_settings.color_depth = '16'
+            scene.render.image_settings.compression = 15  # No compression for speed
+            
+            try:
+                # Save with render settings applied
+                bl_image.save_render(filepath, scene=scene)
+            finally:
+                # Restore scene settings
+                scene.render.image_settings.color_mode = orig_color_mode
+                scene.render.image_settings.color_depth = orig_color_depth
+                scene.render.image_settings.compression = orig_compression
+            
+        except Exception as e:
+            # Fallback to simple save if save_render fails
+            print(f"Warning: save_render failed ({e}), using fallback save method")
+            bl_image.file_format = 'PNG'
             bl_image.save(filepath=filepath)
             
         finally:
