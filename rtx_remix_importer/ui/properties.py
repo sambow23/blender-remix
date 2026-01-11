@@ -89,6 +89,12 @@ def register_properties():
         default="rtx-remix/textures",
     )
     
+    bpy.types.Scene.remix_show_assets_not_in_scene = bpy.props.BoolProperty(
+        name="Show Assets Not in Scene",
+        description="Show assets that exist in USD files but are not present in the current Blender scene",
+        default=False,
+    )
+    
     # --- New Capture Properties ---
     bpy.types.Scene.remix_capture_folder_path = bpy.props.StringProperty(
         name="Capture Folder",
@@ -158,6 +164,8 @@ def unregister_properties():
         del bpy.types.Scene.remix_custom_mesh_dir
     if hasattr(bpy.types.Scene, "remix_custom_texture_dir"):
         del bpy.types.Scene.remix_custom_texture_dir
+    if hasattr(bpy.types.Scene, "remix_show_assets_not_in_scene"):
+        del bpy.types.Scene.remix_show_assets_not_in_scene
     # if hasattr(bpy.types.Scene, "_remix_loaded_sublayers"): # Clean up temp storage
     #     del bpy.types.Scene._remix_loaded_sublayers
     if hasattr(bpy.types.Scene, "_remix_sublayers_ordered"): # Clean up temp storage

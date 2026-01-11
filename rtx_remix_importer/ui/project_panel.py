@@ -216,8 +216,15 @@ class PT_RemixProjectPanel(bpy.types.Panel):
             exported_assets = scene.get("_remix_exported_assets", [])
             
             if exported_assets:
-                # Filter to only show assets that are in the scene
+                # Filter assets based on toggle
                 assets_in_scene = [a for a in exported_assets if a.get('in_scene', False)]
+                show_not_in_scene = scene.remix_show_assets_not_in_scene
+                
+                # Choose which assets to display
+                if show_not_in_scene:
+                    assets_to_display = exported_assets
+                else:
+                    assets_to_display = assets_in_scene
                 
                 # Summary
                 total_count = len(exported_assets)
@@ -227,18 +234,22 @@ class PT_RemixProjectPanel(bpy.types.Panel):
                 not_in_scene_count = total_count - in_scene_count
                 
                 summary_row = box_assets.row()
-                summary_row.label(text=f"Showing: {in_scene_count} | Not in Scene: {not_in_scene_count} ({mesh_count}M, {light_count}L total)")
+                summary_row.label(text=f"Total: {total_count} ({in_scene_count} in scene, {not_in_scene_count} not) | {mesh_count}M, {light_count}L")
+                
+                # Add toggle for showing assets not in scene
+                toggle_row = box_assets.row()
+                toggle_row.prop(scene, "remix_show_assets_not_in_scene", toggle=True)
                 
                 box_assets.separator()
                 
-                # Only show assets if there are any in the scene
-                if assets_in_scene:
+                # Show assets based on filter
+                if assets_to_display:
                     # Create scrollable column with max height
                     col_assets = box_assets.column(align=True)
                     
                     # Limit the number of rows visible before scrolling
                     max_rows = 10
-                    for idx, asset in enumerate(assets_in_scene[:max_rows * 5]):  # Allow many items but UI will scroll
+                    for idx, asset in enumerate(assets_to_display[:max_rows * 5]):  # Allow many items but UI will scroll
                         # Find the original index in the full list for the delete operator
                         i = exported_assets.index(asset)
                         
