@@ -36,6 +36,7 @@ from .operators.camera_ops import (
 from .operators.asset_manager_ops import (
     ScanExportedAssets,
     DeleteExportedAsset,
+    SelectExportedAsset,
 )
 from . import camera_menu
 from .project_panel import (
@@ -82,6 +83,7 @@ operator_classes = [
     AlignViewToCamera,
     ScanExportedAssets,
     DeleteExportedAsset,
+    SelectExportedAsset,
 ]
 
 # List of all panel classes for registration

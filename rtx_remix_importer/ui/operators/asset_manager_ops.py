@@ -365,11 +365,73 @@ class DeleteExportedAsset(bpy.types.Operator):
             return {'CANCELLED'}
 
 
+class SelectExportedAsset(bpy.types.Operator):
+    """Select the corresponding object in the Blender scene"""
+    bl_idname = "remix.select_exported_asset"
+    bl_label = "Select Asset"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    asset_index: bpy.props.IntProperty()
+
+    @classmethod
+    def poll(cls, context):
+        return True
+
+    def execute(self, context):
+        exported_assets = context.scene.get("_remix_exported_assets", [])
+        
+        if self.asset_index < 0 or self.asset_index >= len(exported_assets):
+            self.report({'ERROR'}, "Invalid asset index")
+            return {'CANCELLED'}
+        
+        asset = exported_assets[self.asset_index]
+        asset_name = asset['name']
+        asset_type = asset['type']
+        in_scene = asset.get('in_scene', False)
+        
+        if not in_scene:
+            self.report({'WARNING'}, f"{asset_name} is not in the current scene")
+            return {'CANCELLED'}
+        
+        # Find the object in the scene
+        obj = None
+        if asset_type == 'MESH':
+            # Check for exact match first, then try with dots converted to underscores
+            obj = context.scene.objects.get(asset_name)
+            if not obj:
+                # Try underscore version
+                obj = context.scene.objects.get(asset_name.replace('_', '.'))
+        elif asset_type == 'LIGHT':
+            # For lights, check for name with or without UUID suffix
+            for scene_obj in context.scene.objects:
+                if scene_obj.type == 'LIGHT':
+                    # Check if the scene object name starts with the asset base name
+                    if scene_obj.name == asset_name or scene_obj.name.startswith(asset_name.split('_')[0]):
+                        obj = scene_obj
+                        break
+        
+        if not obj:
+            self.report({'WARNING'}, f"Could not find object: {asset_name}")
+            return {'CANCELLED'}
+        
+        # Deselect all and select the target object
+        if bpy.ops.object.select_all.poll():
+            bpy.ops.object.select_all(action='DESELECT')
+        
+        obj.select_set(True)
+        context.view_layer.objects.active = obj
+        
+        self.report({'INFO'}, f"Selected: {obj.name}")
+        return {'FINISHED'}
+
+
 def register():
     bpy.utils.register_class(ScanExportedAssets)
     bpy.utils.register_class(DeleteExportedAsset)
+    bpy.utils.register_class(SelectExportedAsset)
 
 
 def unregister():
+    bpy.utils.unregister_class(SelectExportedAsset)
     bpy.utils.unregister_class(DeleteExportedAsset)
     bpy.utils.unregister_class(ScanExportedAssets)

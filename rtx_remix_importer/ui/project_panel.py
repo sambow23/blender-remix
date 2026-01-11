@@ -291,6 +291,11 @@ class PT_RemixProjectPanel(bpy.types.Panel):
                         status_row.alignment = 'RIGHT'
                         status_row.label(text="", icon=status_icon)
                         
+                        # Select button (only enabled if asset is in scene)
+                        if in_scene:
+                            select_op = row.operator("remix.select_exported_asset", text="", icon='RESTRICT_SELECT_OFF')
+                            select_op.asset_index = i
+                        
                         # Delete button
                         delete_op = row.operator("remix.delete_exported_asset", text="", icon='TRASH')
                         delete_op.asset_index = i
