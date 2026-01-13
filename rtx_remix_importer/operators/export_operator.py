@@ -889,7 +889,6 @@ def export_light(operator, context, obj, sublayer_stage, project_root, target_su
         light_attrs["inputs:color"] = Gf.Vec3f(bl_light.color[:])
 
     # --- Determine Parent Prim Path (Anchoring) --- 
-    light_base_name = sanitize_prim_name(obj.name)
     
     # Check if this light has already been exported (has a stored USD path)
     stored_light_path = obj.get("usd_light_path", None)
@@ -898,24 +897,23 @@ def export_light(operator, context, obj, sublayer_stage, project_root, target_su
     if stored_light_path and isinstance(stored_light_path, str) and stored_light_path:
         # Extract the name from the stored path
         stored_name = stored_light_path.split('/')[-1]
-        # Check if the stored name starts with the current object's base name
-        # This handles duplicates (Point.001 won't match Point_uuid)
-        if stored_name.startswith(light_base_name + "_"):
+        # Check if the stored name starts with "light_" prefix
+        if stored_name.startswith("light_"):
             # Light was already exported - reuse the existing name
             light_name_sanitized = stored_name
             print(f"  Light already exported - reusing existing name: {light_name_sanitized}")
         else:
-            # Stored path is from a duplicate - generate new UUID
+            # Stored path has old format - generate new UUID-only name
             import uuid
             light_uuid = uuid.uuid4().hex[:8]  # Short UUID
-            light_name_sanitized = f"{light_base_name}_{light_uuid}"
-            print(f"  Duplicate detected (stored: {stored_name}, current: {light_base_name}) - generating new name: {light_name_sanitized}")
+            light_name_sanitized = f"light_{light_uuid}"
+            print(f"  Old format detected (stored: {stored_name}) - generating new UUID: {light_name_sanitized}")
     else:
-        # First export - generate new UUID
+        # First export - generate new UUID-only name
         import uuid
         light_uuid = uuid.uuid4().hex[:8]  # Short UUID
-        light_name_sanitized = f"{light_base_name}_{light_uuid}"
-        print(f"  First export - generating new name: {light_name_sanitized}")
+        light_name_sanitized = f"light_{light_uuid}"
+        print(f"  First export - generating UUID: {light_name_sanitized}")
     
     anchor_obj = context.scene.remix_anchor_object_target # Read anchor from Scene property
     parent_prim_path = None

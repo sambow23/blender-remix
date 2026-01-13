@@ -285,7 +285,7 @@ class ApplyRemixModChanges(bpy.types.Operator):
                         (m[0][3], m[1][3], m[2][3], m[3][3])
                     ))
                     if up_axis_is_y_in_mod:
-                        mat_yup_to_zup = mathutils.Matrix.Rotation(math.radians(-90.0), 4, 'X')
+                        mat_yup_to_zup = mathutils.Matrix.Rotation(math.radians(90.0), 4, 'X')
                         bl_matrix = mat_yup_to_zup @ bl_matrix
                     return bl_matrix
                 except Exception as e:
