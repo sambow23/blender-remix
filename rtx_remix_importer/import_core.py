@@ -168,9 +168,6 @@ def get_mesh_data(usd_mesh_prim, context):
             return None
         verts = [(v[0], v[1], v[2]) for v in verts]
 
-        # Apply Y-up to Z-up correction to vertices if needed
-        if up_axis_is_y:
-            verts = [(v[0], -v[2], v[1]) for v in verts]
 
         # Get face vertex counts and indices
         counts_attr = mesh.GetFaceVertexCountsAttr()
@@ -257,10 +254,6 @@ def extract_normals_data(mesh, time_code, indices, verts, up_axis_is_y):
         norm_interpolation = normals_primvar.GetInterpolation()
         
         if norm_values is not None:
-            # Correct Y-Up normals
-            if up_axis_is_y:
-                norm_values = [Gf.Vec3f(n[0], -n[2], n[1]) for n in norm_values]
-
             if norm_indices and len(norm_indices) == len(indices) and norm_interpolation == UsdGeom.Tokens.faceVarying:
                 normals_data = (norm_values, norm_indices, norm_interpolation)
             elif len(norm_values) == len(verts) and norm_interpolation == UsdGeom.Tokens.vertex:
@@ -290,7 +283,7 @@ def get_transform_matrix(usd_prim, context):
 
         # Apply Y-Up to Z-Up conversion if needed
         if context.up_axis_is_y:
-            mat_yup_to_zup = mathutils.Matrix.Rotation(math.radians(-90.0), 4, 'X')
+            mat_yup_to_zup = mathutils.Matrix.Rotation(math.radians(90.0), 4, 'X')
             bl_matrix = mat_yup_to_zup @ bl_matrix
 
         return bl_matrix

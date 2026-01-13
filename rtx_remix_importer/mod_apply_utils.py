@@ -20,7 +20,7 @@ def get_blender_transform_matrix_from_mod(usd_prim_to_transform, current_xform_c
             (m[0][3], m[1][3], m[2][3], m[3][3])
         ))
         if is_y_up_in_mod:
-            mat_yup_to_zup = mathutils.Matrix.Rotation(math.radians(-90.0), 4, 'X')
+            mat_yup_to_zup = mathutils.Matrix.Rotation(math.radians(90.0), 4, 'X')
             bl_matrix = mat_yup_to_zup @ bl_matrix
         return bl_matrix
     except Exception as e:
@@ -37,8 +37,6 @@ def get_mesh_data_from_mod(usd_mesh_prim_param, current_time_code, is_mod_y_up, 
         verts = points_attr.Get(current_time_code)
         if not verts: return None
         verts = [(v[0], v[1], v[2]) for v in verts]
-        if is_mod_y_up:
-            verts = [(v[0], -v[2], v[1]) for v in verts]
 
         counts_attr = mesh_api.GetFaceVertexCountsAttr()
         indices_attr = mesh_api.GetFaceVertexIndicesAttr()
@@ -72,7 +70,6 @@ def get_mesh_data_from_mod(usd_mesh_prim_param, current_time_code, is_mod_y_up, 
             norm_indices_list = normals_primvar.GetIndices(current_time_code)
             norm_interp = normals_primvar.GetInterpolation()
             if norm_values is not None:
-                if is_mod_y_up: norm_values = [Gf.Vec3f(n[0], -n[2], n[1]) for n in norm_values] # Ensure Gf.Vec3f for list comp
                 normals_data_tuple = (norm_values, norm_indices_list, norm_interp)
         return verts, faces, uvs_data_tuple, normals_data_tuple
     except Exception as e_mesh_data:
