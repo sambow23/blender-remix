@@ -165,7 +165,7 @@ def create_new_blender_light_from_mod(usd_light_prim, time_code_param, scene_sca
             bl_light_data.size = disk_api.GetRadiusAttr().Get(time_code_param) * 2.0 * scene_scale_param if disk_api.GetRadiusAttr().IsDefined() else 0.1 * scene_scale_param
 
     new_bl_light_obj = bpy.data.objects.new(name=bl_light_name, object_data=bl_light_data)
-    new_bl_light_obj["usd_instance_path"] = str(usd_light_prim.GetPath())
+    new_bl_light_obj["usd_light_path"] = str(usd_light_prim.GetPath())
     return new_bl_light_obj
 
 # --- Material-related helpers ---

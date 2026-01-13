@@ -43,6 +43,12 @@ class ScanExportedAssets(bpy.types.Operator):
         blender_mesh_names = {obj.name for obj in context.scene.objects if obj.type == 'MESH'}
         blender_light_names = {obj.name for obj in context.scene.objects if obj.type == 'LIGHT'}
         
+        # Build a map of USD light paths to Blender objects
+        blender_light_paths = {}
+        for obj in context.scene.objects:
+            if obj.type == 'LIGHT' and "usd_light_path" in obj:
+                blender_light_paths[obj["usd_light_path"]] = obj.name
+        
         def scan_stage_for_assets(stage_path, sublayer_rel_path):
             """Scan a USD layer for mesh and light references defined in it"""
             try:
@@ -157,27 +163,28 @@ class ScanExportedAssets(bpy.types.Operator):
                         light_prim_path = prim.GetPath()
                         if layer.GetPrimAtPath(light_prim_path):
                             light_name = prim.GetName()
+                            prim_path = str(prim.GetPath())
                             
-                            # Check if this light exists in Blender scene
-                            # Handle both exact name match and name_uuid format
-                            in_scene = False
-                            if light_name in blender_light_names:
-                                in_scene = True
-                            else:
-                                # Check if light name starts with any Blender light name (for name_uuid format)
-                                for bl_name in blender_light_names:
-                                    # Handle format like "Point_a1b2c3d4" matching "Point"
-                                    if light_name.startswith(bl_name + "_"):
-                                        in_scene = True
-                                        break
-                                    # Handle Blender's dot naming like "Point.001"
-                                    if '.' in bl_name:
-                                        bl_base = bl_name.split('.')[0]
-                                        if light_name.startswith(bl_base + "_"):
+                            # Check if this light exists in Blender scene by matching USD path
+                            in_scene = prim_path in blender_light_paths
+                            
+                            # Fallback: also check by name for backwards compatibility
+                            if not in_scene:
+                                if light_name in blender_light_names:
+                                    in_scene = True
+                                else:
+                                    # Check if light name starts with any Blender light name (for old name_uuid format)
+                                    for bl_name in blender_light_names:
+                                        # Handle format like "Point_a1b2c3d4" matching "Point"
+                                        if light_name.startswith(bl_name + "_"):
                                             in_scene = True
                                             break
-                            
-                            prim_path = str(prim.GetPath())
+                                        # Handle Blender's dot naming like "Point.001"
+                                        if '.' in bl_name:
+                                            bl_base = bl_name.split('.')[0]
+                                            if light_name.startswith(bl_base + "_"):
+                                                in_scene = True
+                                                break
                             
                             exported_assets.append({
                                 'name': light_name,

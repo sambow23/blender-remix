@@ -162,7 +162,12 @@ class ModFileLoader:
                 path = obj["usd_instance_path"]
                 self.blender_object_map[path] = obj
             
-            # Check for usd_prim_path (direct prims like lights)
+            # Check for usd_light_path (lights)
+            elif "usd_light_path" in obj:
+                path = obj["usd_light_path"]
+                self.blender_object_map[path] = obj
+            
+            # Check for usd_prim_path (other direct prims like cameras)
             elif "usd_prim_path" in obj:
                 path = obj["usd_prim_path"]
                 self.blender_object_map[path] = obj

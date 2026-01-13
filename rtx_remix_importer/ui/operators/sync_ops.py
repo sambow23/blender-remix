@@ -249,12 +249,15 @@ class ApplyRemixModChanges(bpy.types.Operator):
             self.report({'INFO'}, "Building map of existing Blender objects...")
             blender_object_map = {}
             for obj in bpy.data.objects:
+                # Check for different USD path types
                 if "usd_instance_path" in obj:
                     blender_object_map[obj["usd_instance_path"]] = obj
-                # Potentially also check for "usd_prim_path" for non-instanced prims (lights, cameras directly)
-                # For now, focusing on instance paths as they are common in mod files.
+                elif "usd_light_path" in obj:
+                    blender_object_map[obj["usd_light_path"]] = obj
+                elif "usd_prim_path" in obj:
+                    blender_object_map[obj["usd_prim_path"]] = obj
 
-            self.report({'INFO'}, f"Found {len(blender_object_map)} Blender objects with 'usd_instance_path'.")
+            self.report({'INFO'}, f"Found {len(blender_object_map)} Blender objects with USD paths.")
 
             num_prims_processed = 0
             num_matched_objects = 0
