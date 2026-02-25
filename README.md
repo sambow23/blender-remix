@@ -1,3 +1,5 @@
+> This projected uses AI-generated code.
+
 # Remix Toolkit for Blender
 ![image](https://github.com/user-attachments/assets/c20812f9-6efb-446a-9c86-e797bb90682e)
 
