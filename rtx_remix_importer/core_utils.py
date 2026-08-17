@@ -1053,6 +1053,123 @@ class TextureProcessor:
             # Restore original file format
             bl_image.file_format = orig_file_format
 
+    # --- DDS -> PNG Conversion Methods ---
+    # These were dropped during the PNG->DDS refactor above but are still
+    # relied on by capture thumbnail generation (get_thumbnail_preview) and
+    # the "Fix Broken Textures" / "Convert DDS to PNG" operators.
+
+    def convert_dds_to_png_sync(
+        self,
+        dds_path: str,
+        output_path: str,
+        progress_callback: Optional[Callable[[str], None]] = None
+    ) -> bool:
+        """Convert a single DDS file to PNG format synchronously."""
+        if not self.is_available():
+            if progress_callback:
+                progress_callback("texconv.exe not found")
+            return False
+
+        try:
+            if progress_callback:
+                progress_callback(f"Converting {os.path.basename(dds_path)} to PNG...")
+
+            output_dir = os.path.dirname(output_path)
+            os.makedirs(output_dir, exist_ok=True)
+
+            cmd = [
+                self.texconv_path,
+                dds_path,
+                "-o", output_dir,
+                "-ft", "png",
+                "-y",  # Overwrite existing
+                "-nologo",
+            ]
+
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+                shell=False,
+                timeout=30
+            )
+
+            if result.returncode != 0:
+                if progress_callback:
+                    progress_callback(f"texconv failed: {result.stderr}")
+                return False
+
+            # texconv names the output after the input file's base name
+            original_name = os.path.splitext(os.path.basename(dds_path))[0]
+            texconv_output = os.path.join(output_dir, f"{original_name}.png")
+
+            if os.path.exists(texconv_output):
+                if texconv_output != output_path:
+                    os.replace(texconv_output, output_path)
+                if progress_callback:
+                    progress_callback("Conversion complete")
+                return True
+            else:
+                if progress_callback:
+                    progress_callback("texconv output file not found")
+                return False
+
+        except subprocess.TimeoutExpired:
+            if progress_callback:
+                progress_callback("texconv timed out")
+            return False
+        except Exception as e:
+            if progress_callback:
+                progress_callback(f"Error: {e}")
+            return False
+
+    async def convert_dds_to_png_async(
+        self,
+        dds_path: str,
+        output_path: str,
+        progress_callback: Optional[Callable[[str], None]] = None
+    ) -> bool:
+        """Convert DDS file to PNG format asynchronously."""
+        if not self.is_available():
+            if progress_callback:
+                progress_callback("texconv.exe not found")
+            return False
+
+        def _convert():
+            return self.convert_dds_to_png_sync(dds_path, output_path, progress_callback)
+
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(get_thread_pool(), _convert)
+
+    def batch_convert_dds_to_png(
+        self,
+        dds_files: List[str],
+        output_dir: str,
+        progress_callback: Optional[Callable[[int, int, str], None]] = None
+    ) -> List[str]:
+        """Batch convert multiple DDS files to PNG. Returns list of output PNG paths."""
+        if not self.is_available():
+            return []
+
+        converted_files = []
+        total_files = len(dds_files)
+
+        for i, dds_file in enumerate(dds_files):
+            if progress_callback:
+                progress_callback(i, total_files, f"Converting {os.path.basename(dds_file)}")
+
+            base_name = os.path.splitext(os.path.basename(dds_file))[0]
+            output_path = os.path.join(output_dir, f"{base_name}.png")
+
+            if self.convert_dds_to_png_sync(dds_file, output_path):
+                converted_files.append(output_path)
+
+        if progress_callback:
+            progress_callback(total_files, total_files, "Batch conversion complete")
+
+        return converted_files
+
     # Legacy method names for backward compatibility
     async def convert_texture_async(self, bl_image, output_path, dds_format='BC7_UNORM_SRGB', progress_callback=None):
         """Legacy method - use convert_png_to_dds_async instead."""

@@ -1,12 +1,26 @@
 import bpy
 from .operators.capture_ops import auto_scan_capture_folder
 from .capture_list import RemixCaptureListItem
+from .capture_panel import load_thumbnail
 
 # --- Scene Properties ---
 
 def poll_is_mesh_object(self, object):
     """ Poll function for PointerProperty to allow selecting only MESH objects. """
     return object.type == 'MESH'
+
+def on_capture_index_update(self, context):
+    """Load the thumbnail for the newly selected capture immediately.
+
+    Relying solely on depsgraph_update_post is not enough: simply changing
+    the active index of the capture UIList (a plain Scene IntProperty) does
+    not trigger a depsgraph update, so the preview would never load/refresh
+    when clicking through the list.
+    """
+    captures = self.remix_captures
+    index = self.remix_captures_index
+    if 0 <= index < len(captures):
+        load_thumbnail(captures[index].full_path)
 
 def register_properties():
     bpy.types.Scene.remix_mod_file_path = bpy.props.StringProperty(
@@ -122,7 +136,11 @@ def register_properties():
 
     # --- UIList Properties ---
     bpy.types.Scene.remix_captures = bpy.props.CollectionProperty(type=RemixCaptureListItem)
-    bpy.types.Scene.remix_captures_index = bpy.props.IntProperty(name="Capture List Index", default=0)
+    bpy.types.Scene.remix_captures_index = bpy.props.IntProperty(
+        name="Capture List Index",
+        default=0,
+        update=on_capture_index_update,
+    )
 
     bpy.types.Scene.remix_project_root = bpy.props.StringProperty(
         name="Project Root",
